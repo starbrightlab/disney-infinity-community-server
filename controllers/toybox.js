@@ -764,10 +764,327 @@ const listToyboxes = async (req, res) => {
   }
 };
 
+/**
+ * Update toybox
+ */
+const updateToybox = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get existing toybox and verify ownership
+    const { data: existingToybox, error: fetchError } = await supabase
+      .from('toyboxes')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !existingToybox) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Toybox not found'
+        }
+      });
+    }
+
+    // Verify ownership
+    if (existingToybox.creator_id !== req.user.id) {
+      return res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Not authorized to update this toybox'
+        }
+      });
+    }
+
+    // Parse content info if provided
+    let parsedContentInfo, parsedScreenshotInfo;
+    const { contentInfo, screenshotInfo } = req.body;
+    
+    if (contentInfo) {
+      try {
+        parsedContentInfo = typeof contentInfo === 'string' ? JSON.parse(contentInfo) : contentInfo;
+      } catch (err) {
+        return res.status(400).json({
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Invalid JSON in contentInfo'
+          }
+        });
+      }
+    }
+
+    if (screenshotInfo) {
+      try {
+        parsedScreenshotInfo = typeof screenshotInfo === 'string' ? JSON.parse(screenshotInfo) : screenshotInfo;
+      } catch (err) {
+        return res.status(400).json({
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Invalid JSON in screenshotInfo'
+          }
+        });
+      }
+    }
+
+    // Handle file updates
+    const contentFile = req.files?.content || req.files?.data;
+    const screenshotFile = req.files?.screenshot;
+    
+    let newContentPath = existingToybox.file_path;
+    let newFileHash = existingToybox.file_hash;
+    let newFileSize = existingToybox.file_size;
+    let oldContentPath = null;
+
+    // Update content file if provided
+    if (contentFile) {
+      const maxSize = parseInt(process.env.MAX_FILE_SIZE) || 104857600;
+      if (contentFile.size > maxSize) {
+        return res.status(400).json({
+          error: {
+            code: 'INVALID_REQUEST',
+            message: `File too large. Maximum size: ${maxSize} bytes`
+          }
+        });
+      }
+
+      // Generate new file hash
+      newFileHash = generateFileHash(contentFile.data);
+
+      // Upload new content file
+      const newFileName = `toybox_${Date.now()}_${crypto.randomBytes(8).toString('hex')}.dat`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from(process.env.SUPABASE_BUCKET || 'toyboxes')
+        .upload(newFileName, contentFile.data, {
+          contentType: 'application/octet-stream',
+          upsert: false
+        });
+
+      if (uploadError) {
+        winston.error('Content upload error:', uploadError);
+        return res.status(500).json({
+          error: {
+            code: 'SERVER_ERROR',
+            message: 'Failed to upload content file'
+          }
+        });
+      }
+
+      oldContentPath = existingToybox.file_path;
+      newContentPath = uploadData.path;
+      newFileSize = contentFile.size;
+    }
+
+    // Handle screenshot update
+    let newScreenshotPath = existingToybox.screenshot;
+    let newScreenshotMetadata = existingToybox.screenshot_metadata;
+    let oldScreenshotPath = null;
+
+    if (screenshotFile) {
+      const screenshotFileName = `screenshot_${Date.now()}_${crypto.randomBytes(8).toString('hex')}.png`;
+      const { data: screenshotUpload, error: screenshotError } = await supabase.storage
+        .from(process.env.SUPABASE_BUCKET || 'toyboxes')
+        .upload(screenshotFileName, screenshotFile.data, {
+          contentType: 'image/png',
+          upsert: false
+        });
+
+      if (screenshotError) {
+        winston.warn(`Screenshot upload failed: ${screenshotError.message}`);
+      } else {
+        oldScreenshotPath = existingToybox.screenshot;
+        newScreenshotPath = screenshotUpload.path;
+        newScreenshotMetadata = parsedScreenshotInfo;
+      }
+    }
+
+    // Build update object
+    const updateData = {
+      updated_at: new Date().toISOString()
+    };
+
+    // Update metadata if provided
+    if (parsedContentInfo) {
+      if (parsedContentInfo.name) updateData.title = parsedContentInfo.name;
+      if (parsedContentInfo.desc !== undefined) updateData.description = parsedContentInfo.desc;
+      if (parsedContentInfo.version) updateData.version = parsedContentInfo.version;
+      if (parsedContentInfo.igps) updateData.avatars = parsedContentInfo.igps;
+      if (parsedContentInfo.abilities) updateData.abilities = parsedContentInfo.abilities;
+      if (parsedContentInfo.genres) updateData.genres = parsedContentInfo.genres;
+      if (parsedContentInfo.playsets) updateData.playsets = parsedContentInfo.playsets;
+      if (parsedContentInfo.required_playsets_size !== undefined) {
+        updateData.required_playsets_size = parsedContentInfo.required_playsets_size;
+      }
+      if (parsedContentInfo.total_objects !== undefined) {
+        updateData.total_objects = parsedContentInfo.total_objects;
+      }
+      if (parsedContentInfo.unique_objects !== undefined) {
+        updateData.unique_objects = parsedContentInfo.unique_objects;
+      }
+      if (parsedContentInfo.object_counts) {
+        updateData.object_counts = parsedContentInfo.object_counts;
+      }
+    }
+
+    // Update file paths if changed
+    if (contentFile) {
+      updateData.file_path = newContentPath;
+      updateData.file_hash = newFileHash;
+      updateData.file_size = newFileSize;
+      updateData.data_size = newFileSize;
+    }
+
+    if (screenshotFile) {
+      updateData.screenshot = newScreenshotPath;
+      updateData.screenshot_metadata = newScreenshotMetadata;
+    }
+
+    // Update database
+    const { error: updateError } = await supabase
+      .from('toyboxes')
+      .update(updateData)
+      .eq('id', id);
+
+    if (updateError) {
+      winston.error('Toybox update error:', updateError);
+      
+      // Cleanup newly uploaded files on error
+      if (contentFile && newContentPath !== existingToybox.file_path) {
+        await supabase.storage
+          .from(process.env.SUPABASE_BUCKET || 'toyboxes')
+          .remove([newContentPath]);
+      }
+      if (screenshotFile && newScreenshotPath !== existingToybox.screenshot) {
+        await supabase.storage
+          .from(process.env.SUPABASE_BUCKET || 'toyboxes')
+          .remove([newScreenshotPath]);
+      }
+
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to update toybox'
+        }
+      });
+    }
+
+    // Delete old files after successful update
+    if (oldContentPath) {
+      await supabase.storage
+        .from(process.env.SUPABASE_BUCKET || 'toyboxes')
+        .remove([oldContentPath])
+        .catch(err => winston.warn('Failed to delete old content file:', err));
+    }
+
+    if (oldScreenshotPath) {
+      await supabase.storage
+        .from(process.env.SUPABASE_BUCKET || 'toyboxes')
+        .remove([oldScreenshotPath])
+        .catch(err => winston.warn('Failed to delete old screenshot:', err));
+    }
+
+    winston.info(`Toybox updated: ${id} by ${req.user.username}`);
+
+    res.json({
+      id: id,
+      message: 'Toybox updated successfully',
+      updated_at: updateData.updated_at
+    });
+
+  } catch (err) {
+    winston.error('Toybox update error:', err);
+    res.status(500).json({
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Failed to update toybox'
+      }
+    });
+  }
+};
+
+/**
+ * Delete toybox
+ */
+const deleteToybox = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get toybox and verify ownership
+    const { data: toybox, error: fetchError } = await supabase
+      .from('toyboxes')
+      .select('creator_id, file_path, screenshot')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !toybox) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Toybox not found'
+        }
+      });
+    }
+
+    // Verify ownership
+    if (toybox.creator_id !== req.user.id) {
+      return res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Not authorized to delete this toybox'
+        }
+      });
+    }
+
+    // Delete from database
+    const { error: deleteError } = await supabase
+      .from('toyboxes')
+      .delete()
+      .eq('id', id);
+
+    if (deleteError) {
+      winston.error('Toybox delete error:', deleteError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to delete toybox'
+        }
+      });
+    }
+
+    // Delete files from storage
+    const filesToDelete = [toybox.file_path];
+    if (toybox.screenshot) {
+      filesToDelete.push(toybox.screenshot);
+    }
+
+    await supabase.storage
+      .from(process.env.SUPABASE_BUCKET || 'toyboxes')
+      .remove(filesToDelete)
+      .catch(err => winston.warn('Failed to delete toybox files:', err));
+
+    winston.info(`Toybox deleted: ${id} by ${req.user.username}`);
+
+    res.json({
+      message: 'Toybox deleted successfully'
+    });
+
+  } catch (err) {
+    winston.error('Toybox delete error:', err);
+    res.status(500).json({
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Failed to delete toybox'
+      }
+    });
+  }
+};
+
 module.exports = {
   uploadToybox,
   downloadToybox,
   listToyboxes,
+  updateToybox,
+  deleteToybox,
   uploadValidation,
   downloadValidation,
   listValidation
