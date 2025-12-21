@@ -68,6 +68,30 @@ router.get('/simple', async (req, res) => {
   }
 });
 
+// Simplified list toyboxes for debugging (temporary)
+router.get('/basic', async (req, res) => {
+  try {
+    const { supabase } = require('../config/database');
+    const { data, error } = await supabase
+      .from('toyboxes')
+      .select('id,title,creator_id,created_at,status')
+      .eq('status', 3) // published only
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (error) {
+      console.log('Basic toybox list error:', error);
+      return res.status(500).json({ error: error.message, code: error.code });
+    }
+
+    console.log('Basic toybox list success:', data?.length || 0, 'results');
+    res.json({ toyboxes: data || [] });
+  } catch (err) {
+    console.log('Basic toybox list exception:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // List toyboxes (public) - cached for 5 minutes
 router.get('/', listValidation, optionalAuth, cacheMiddleware(300, (req) => {
   // Create cache key based on query parameters
