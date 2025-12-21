@@ -48,12 +48,23 @@ router.get('/simple', async (req, res) => {
       .limit(5);
 
     if (error) {
-      return res.status(500).json({ error: error.message });
+      console.log('Toybox query error:', error);
+      return res.status(500).json({
+        error: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint
+      });
     }
 
+    console.log('Toybox query success:', data);
     res.json({ toyboxes: data });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.log('Toybox query exception:', err);
+    res.status(500).json({
+      error: err.message,
+      stack: err.stack
+    });
   }
 });
 
