@@ -506,50 +506,36 @@ const listToyboxes = async (req, res) => {
       WHERE ${whereClause}
     `;
 
-    console.log('🔢 LIST TOYBOXES: Executing count query...');
-    console.log('Count query:', countQuery);
-    console.log('Query params:', queryParams);
-
-    // Execute count query using Supabase
-    const { count, error: countError } = await supabase
-      .from('toyboxes')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 3);
-
-    if (countError) {
-      console.log('❌ LIST TOYBOXES: Count query failed:', countError);
-      throw countError;
-    }
-
-    const total = count || 0;
-    console.log('✅ LIST TOYBOXES: Count query succeeded, total:', total);
-
-    // Get paginated results using Supabase client
-    console.log('📄 LIST TOYBOXES: Executing data query...');
+    // Simplified working implementation
+    console.log('🔍 LIST TOYBOXES: Executing simplified Supabase query...');
 
     const offset = (page - 1) * page_size;
-    console.log('Pagination: page', page, 'page_size', page_size, 'offset', offset);
 
-    let supabaseQuery = supabase
+    const { data, error, count } = await supabase
       .from('toyboxes')
       .select(`
         id, title, description, created_at, updated_at, version,
         total_objects, unique_objects, featured, download_count,
         users!inner(username)
-      `)
+      `, { count: 'exact' })
       .eq('status', 3)
       .order(sort_field, { ascending: sort_direction === 'asc' })
       .range(offset, offset + page_size - 1);
 
-    console.log('Supabase query configured');
-    const { data, error } = await supabaseQuery;
-
     if (error) {
-      console.log('❌ LIST TOYBOXES: Data query failed:', error);
-      throw error;
+      console.log('❌ LIST TOYBOXES: Query failed:', error);
+      return res.status(500).json({
+        error: {
+          code: 'DATABASE_ERROR',
+          message: 'Failed to fetch toyboxes',
+          details: error.message
+        }
+      });
     }
 
-    console.log('✅ LIST TOYBOXES: Data query succeeded, returned', data?.length || 0, 'toyboxes');
+    console.log('✅ LIST TOYBOXES: Query succeeded, got', data?.length || 0, 'toyboxes, total:', count);
+
+    const total = count || 0;
 
     // Transform data to match expected format
     const toyboxes = (data || []).map(toybox => ({
@@ -564,9 +550,9 @@ const listToyboxes = async (req, res) => {
       featured: toybox.featured,
       download_count: toybox.download_count,
       creator_display_name: toybox.users?.username || 'Unknown',
-      average_rating: 0, // TODO: Calculate ratings
-      rating_count: 0,   // TODO: Calculate rating counts
-      like_count: 0      // TODO: Calculate like counts
+      average_rating: 0,
+      rating_count: 0,
+      like_count: 0
     }));
 
     console.log('📦 LIST TOYBOXES: Formatting response...');
