@@ -153,6 +153,71 @@ router.post('/', authenticateToken, upload.fields([
   }
 });
 
+// Get trending toyboxes - cached for 15 minutes
+router.get('/trending', cacheMiddleware(900, (req) => {
+  const { genre, limit } = req.query;
+  return `GET:/api/v1/toybox/trending?genre=${genre || ''}&limit=${limit || 20}`;
+}), async (req, res) => {
+  try {
+    const { supabase } = require('../config/database');
+    const { genre, limit = 20 } = req.query;
+
+    // For now, return recent popular toyboxes (simplified trending)
+    const { data: toyboxes, error } = await supabase
+      .from('toyboxes')
+      .select('id, title, creator_id, download_count, created_at')
+      .eq('status', 3)
+      .order('download_count', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(parseInt(limit));
+
+    if (error) {
+      const winston = require('winston');
+      winston.error('Trending fetch error:', error);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to fetch trending toyboxes'
+        }
+      });
+    }
+
+    // Get creator usernames
+    const creatorIds = [...new Set(toyboxes.map(t => t.creator_id))];
+    const { data: creators } = await supabase
+      .from('users')
+      .select('id, username')
+      .in('id', creatorIds);
+
+    const creatorMap = {};
+    creators?.forEach(creator => {
+      creatorMap[creator.id] = creator.username;
+    });
+
+    const items = toyboxes.map(toybox => ({
+      id: toybox.id,
+      name: toybox.title,
+      creator_display_name: creatorMap[toybox.creator_id] || 'Unknown',
+      downloads: { count: toybox.download_count || 0 },
+      likes: { count: 0 }, // TODO: Add likes count
+      rating: 0, // TODO: Add rating
+      created_at: toybox.created_at
+    }));
+
+    res.json(items);
+
+  } catch (err) {
+    const winston = require('winston');
+    winston.error('Trending fetch error:', err);
+    res.status(500).json({
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Failed to fetch trending toyboxes'
+      }
+    });
+  }
+});
+
 // Download toybox (public for published toyboxes)
 router.get('/:id', downloadValidation, optionalAuth, downloadToybox);
 
@@ -423,171 +488,7 @@ router.post('/:id/like', authenticateToken, downloadValidation, async (req, res)
   }
 });
 
-// Get trending toyboxes - cached for 15 minutes
-router.get('/trending', cacheMiddleware(900, (req) => {
-  const { genre, limit } = req.query;
-  return `GET:/api/v1/toybox/trending?genre=${genre || ''}&limit=${limit || 20}`;
-}), async (req, res) => {
-  try {
-    const { supabase } = require('../config/database');
-    const { genre, limit = 20 } = req.query;
-
-    // For now, return recent popular toyboxes (simplified trending)
-    const { data: toyboxes, error } = await supabase
-      .from('toyboxes')
-      .select('id, title, creator_id, download_count, created_at')
-      .eq('status', 3)
-      .order('download_count', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(parseInt(limit));
-
-    if (error) {
-      winston.error('Trending fetch error:', error);
-      return res.status(500).json({
-        error: {
-          code: 'SERVER_ERROR',
-          message: 'Failed to fetch trending toyboxes'
-        }
-      });
-    }
-
-    // Get creator usernames
-    const creatorIds = [...new Set(toyboxes.map(t => t.creator_id))];
-    const { data: creators } = await supabase
-      .from('users')
-      .select('id, username')
-      .in('id', creatorIds);
-
-    const creatorMap = {};
-    creators?.forEach(creator => {
-      creatorMap[creator.id] = creator.username;
-    });
-
-    const items = toyboxes.map(toybox => ({
-      id: toybox.id,
-      name: toybox.title,
-      creator_display_name: creatorMap[toybox.creator_id] || 'Unknown',
-      downloads: { count: toybox.download_count || 0 },
-      likes: { count: 0 }, // TODO: Add likes count
-      rating: 0, // TODO: Add rating
-      created_at: toybox.created_at
-    }));
-
-    res.json(items);
-
-  } catch (err) {
-    const winston = require('winston');
-    winston.error('Trending fetch error:', err);
-    res.status(500).json({
-      error: {
-        code: 'SERVER_ERROR',
-        message: 'Failed to fetch trending toyboxes'
-      }
-    });
-  }
-});
-
 // Download toybox (public for published toyboxes)
-router.get('/trending', cacheMiddleware(900, (req) => {
-  const { genre, limit } = req.query;
-  return `GET:/api/v1/toybox/trending?genre=${genre || ''}&limit=${limit || 20}`;
-}), async (req, res) => {
-  try {
-    const { supabase } = require('../config/database');
-    const { genre, limit = 20 } = req.query;
-
-    // Trending algorithm: weighted score based on downloads, ratings, and recency
-    let queryText = `
-      SELECT
-        t.id, t.title, t.description, t.created_at, t.download_count,
-        u.username as creator_display_name,
-        COALESCE(AVG(r.rating), 0) as average_rating,
-        COUNT(DISTINCT r.id) as rating_count,
-        COUNT(DISTINCT l.id) as like_count,
-        -- Trending score: downloads + (ratings * 10) + (recency bonus)
-        (t.download_count +
-         (COALESCE(AVG(r.rating), 0) * 10) +
-         GREATEST(0, 30 - EXTRACT(EPOCH FROM (NOW() - t.created_at))/86400) * 2) as trending_score
-      FROM toyboxes t
-      LEFT JOIN users u ON t.creator_id = u.id
-      LEFT JOIN toybox_ratings r ON t.id = r.toybox_id
-      LEFT JOIN toybox_likes l ON t.id = l.toybox_id
-      WHERE t.status = 3 AND t.created_at > NOW() - INTERVAL '90 days'
-    `;
-
-    const queryParams = [];
-    let paramIndex = 1;
-
-    // Genre filter
-    if (genre) {
-      queryText += ` AND $${paramIndex} = ANY(t.genres)`;
-      queryParams.push(parseInt(genre));
-      paramIndex++;
-    }
-
-    queryText += `
-      GROUP BY t.id, u.username
-      HAVING COUNT(DISTINCT r.id) > 0 OR t.download_count > 0
-      ORDER BY trending_score DESC
-      LIMIT $${paramIndex}
-    `;
-
-    queryParams.push(parseInt(limit));
-
-    // For now, return recent popular toyboxes (simplified trending)
-    const { data: toyboxes, error } = await supabase
-      .from('toyboxes')
-      .select('id, title, creator_id, download_count, created_at')
-      .eq('status', 3)
-      .order('download_count', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(parseInt(limit));
-
-    if (error) {
-      winston.error('Trending fetch error:', error);
-      return res.status(500).json({
-        error: {
-          code: 'SERVER_ERROR',
-          message: 'Failed to fetch trending toyboxes'
-        }
-      });
-    }
-
-    // Get creator usernames
-    const creatorIds = [...new Set(toyboxes.map(t => t.creator_id))];
-    const { data: creators } = await supabase
-      .from('users')
-      .select('id, username')
-      .in('id', creatorIds);
-
-    const creatorMap = {};
-    creators?.forEach(creator => {
-      creatorMap[creator.id] = creator.username;
-    });
-
-    const items = toyboxes.map(toybox => ({
-      id: toybox.id,
-      name: toybox.title,
-      creator_display_name: creatorMap[toybox.creator_id] || 'Unknown',
-      downloads: { count: toybox.download_count || 0 },
-      likes: { count: 0 }, // TODO: Add likes count
-      rating: 0, // TODO: Add rating
-      created_at: toybox.created_at
-    }));
-
-    res.json(items);
-
-  } catch (err) {
-    const winston = require('winston');
-    winston.error('Trending fetch error:', err);
-    res.status(500).json({
-      error: {
-        code: 'SERVER_ERROR',
-        message: 'Failed to fetch trending toyboxes'
-      }
-    });
-  }
-});
 
 // Get user's toyboxes
 router.get('/user/list', authenticateToken, async (req, res) => {
