@@ -592,6 +592,26 @@ app.get('/api/v1/test/ping', (req, res) => {
   res.json({ status: 'ok', message: 'Debug endpoint working', timestamp: new Date().toISOString() });
 });
 
+app.get('/api/v1/test/supabase', async (req, res) => {
+  try {
+    // Test basic Supabase connection
+    const testResult = await supabase.from('users').select('count').limit(1);
+    res.json({
+      status: 'ok',
+      supabase_connected: true,
+      test_result: testResult,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      supabase_connected: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 app.post('/api/v1/test/login-query', async (req, res) => {
   try {
     const { username } = req.body;
