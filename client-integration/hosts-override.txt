@@ -1,0 +1,33 @@
+# Disney Infinity Community Server - Hosts File Override
+# Add these entries to your system's hosts file to redirect Disney UGC traffic
+# to the community server.
+#
+# Windows: C:\Windows\System32\drivers\etc\hosts
+# Linux/macOS: /etc/hosts
+#
+# Replace YOUR_SERVER_IP with your actual server IP address or domain
+
+# Disney UGC and Toybox Services
+YOUR_SERVER_IP disney.go.com
+YOUR_SERVER_IP toys.disney.go.com
+YOUR_SERVER_IP ugc.disney.go.com
+YOUR_SERVER_IP api.toybox.com
+YOUR_SERVER_IP toybox.disney.go.com
+
+# Authentication Services
+YOUR_SERVER_IP login.disney.go.com
+YOUR_SERVER_IP auth.disney.go.com
+
+# Matchmaking Services (if implemented)
+YOUR_SERVER_IP matchmaking.disney.go.com
+YOUR_SERVER_IP multiplayer.disney.go.com
+
+# CDN and Asset Services
+YOUR_SERVER_IP cdn.disney.go.com
+YOUR_SERVER_IP assets.disney.go.com
+
+# Notes:
+# - Some entries may not be needed depending on your client version
+# - Test with one entry at a time to identify required domains
+# - Remove these entries to restore original Disney functionality
+# - Backup your original hosts file before making changes

@@ -1,0 +1,249 @@
+services:
+  # Disney Infinity Community Server API
+  - type: web
+    name: infinity-community-server
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    plan: standard
+    autoDeploy: true
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: PORT
+        fromService:
+          type: web
+          name: infinity-community-server
+          property: port
+      - key: DATABASE_URL
+        sync: false # Set manually in Render dashboard
+      - key: SUPABASE_URL
+        sync: false # Set manually in Render dashboard
+      - key: SUPABASE_ANON_KEY
+        sync: false # Set manually in Render dashboard
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false # Set manually in Render dashboard
+      - key: JWT_SECRET
+        generateValue: true # Auto-generate secure secret
+      - key: ALLOWED_ORIGINS
+        value: https://api.dibeyond.com,https://dibeyond.com
+      - key: CORS_ORIGIN
+        value: https://api.dibeyond.com
+      - key: CDN_URL
+        value: https://cdn.dibeyond.com
+      - key: CDN_ENABLED
+        value: true
+      - key: HEALTH_CHECK_ENABLED
+        value: true
+      - key: ENABLE_METRICS
+        value: true
+      - key: METRICS_INTERVAL
+        value: 30000
+      - key: BACKUP_ENABLED
+        value: true
+      - key: BACKUP_RETENTION_DAYS
+        value: 30
+      - key: ENABLE_MULTIPLAYER
+        value: true
+      - key: ENABLE_TOYBOX_SHARING
+        value: true
+      - key: ENABLE_ACHIEVEMENTS
+        value: true
+      - key: ENABLE_FRIENDS
+        value: true
+      - key: ENABLE_LEADERBOARDS
+        value: true
+      - key: ENABLE_ANALYTICS
+        value: true
+      - key: ENABLE_BACKUPS
+        value: true
+      - key: WEBRTC_ENABLED
+        value: true
+      - key: STUN_SERVERS
+        value: stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302
+      - key: SESSION_SECURE
+        value: true
+      - key: COOKIE_SECURE
+        value: true
+      - key: COOKIE_HTTP_ONLY
+        value: true
+      - key: COOKIE_SAME_SITE
+        value: strict
+      - key: SECURITY_HEADERS
+        value: true
+      - key: HSTS_MAX_AGE
+        value: 31536000
+      - key: BRUTE_FORCE_PROTECTION_ENABLED
+        value: true
+      - key: BRUTE_FORCE_MAX_ATTEMPTS
+        value: 5
+      - key: BRUTE_FORCE_WINDOW_MS
+        value: 900000
+      - key: RATE_LIMIT_WINDOW_MS
+        value: 900000
+      - key: RATE_LIMIT_MAX_REQUESTS
+        value: 100
+      - key: MAX_CONNECTIONS_PER_IP
+        value: 10
+      - key: QUERY_TIMEOUT
+        value: 30000
+      - key: CACHE_TTL
+        value: 3600000
+      - key: DB_POOL_MAX
+        value: 20
+      - key: DB_POOL_IDLE_TIMEOUT
+        value: 30000
+      - key: DB_POOL_CONNECTION_TIMEOUT
+        value: 2000
+      - key: SOCKET_PING_TIMEOUT
+        value: 60000
+      - key: SOCKET_PING_INTERVAL
+        value: 25000
+      - key: MEMORY_WARNING_THRESHOLD
+        value: 400
+      - key: MEMORY_CRITICAL_THRESHOLD
+        value: 500
+      - key: CPU_WARNING_THRESHOLD
+        value: 70
+      - key: CPU_CRITICAL_THRESHOLD
+        value: 90
+      - key: MEMORY_WARNING_THRESHOLD
+        value: 80
+      - key: MEMORY_CRITICAL_THRESHOLD
+        value: 95
+      - key: DISK_WARNING_THRESHOLD
+        value: 80
+      - key: DISK_CRITICAL_THRESHOLD
+        value: 95
+      - key: TARGET_RESPONSE_TIME
+        value: 200
+      - key: TARGET_ERROR_RATE
+        value: 0.01
+      - key: TARGET_UPTIME
+        value: 99.9
+      - key: MAINTENANCE_MODE
+        value: false
+      - key: BETA_MODE
+        value: true
+      - key: DEFAULT_TIMEZONE
+        value: UTC
+      - key: SUPPORTED_LOCALES
+        value: en,es,fr,de,it,pt,ru,ja,ko,zh
+      - key: PRIVACY_POLICY_URL
+        value: https://dibeyond.com/privacy
+      - key: TERMS_OF_SERVICE_URL
+        value: https://dibeyond.com/terms
+      - key: COOKIE_POLICY_URL
+        value: https://dibeyond.com/cookies
+      - key: ADMIN_EMAIL
+        value: admin@dibeyond.com
+      - key: SUPPORT_EMAIL
+        value: support@dibeyond.com
+      - key: USER_DATA_RETENTION_DAYS
+        value: 365
+      - key: GAME_DATA_RETENTION_DAYS
+        value: 90
+      - key: LOG_RETENTION_DAYS
+        value: 30
+      - key: MAX_FILE_SIZE
+        value: 104857600
+      - key: UPLOAD_PATH
+        value: /tmp/uploads
+      - key: DB_OPTIMIZATION_ENABLED
+        value: true
+      - key: DB_QUERY_LOGGING
+        value: true
+      - key: DB_SLOW_QUERY_THRESHOLD
+        value: 1000
+      - key: QUEUE_ENABLED
+        value: true
+      - key: QUEUE_MAX_SIZE
+        value: 10000
+      - key: QUEUE_PROCESS_INTERVAL
+        value: 1000
+      - key: IN_GAME_NOTIFICATIONS_ENABLED
+        value: true
+      - key: PUSH_NOTIFICATIONS_ENABLED
+        value: false
+      - key: ALERT_EMAIL_ENABLED
+        value: false
+      - key: ALERT_SMS_ENABLED
+        value: false
+      - key: ALERT_WEBHOOK_ENABLED
+        value: false
+      - key: AUTO_SCALING_ENABLED
+        value: true
+      - key: MIN_INSTANCES
+        value: 1
+      - key: MAX_INSTANCES
+        value: 10
+      - key: SCALE_UP_THRESHOLD
+        value: 70
+      - key: SCALE_DOWN_THRESHOLD
+        value: 30
+      - key: COST_OPTIMIZATION_ENABLED
+        value: true
+      - key: IDLE_TIMEOUT
+        value: 300000
+      - key: CONNECTION_POOL_OPTIMIZATION
+        value: true
+      - key: CONTENT_MODERATION_ENABLED
+        value: true
+      - key: AUTO_MODERATION_ENABLED
+        value: true
+      - key: MODERATION_THRESHOLD
+        value: 0.8
+      - key: ALLOWED_COUNTRIES
+        value: all
+      - key: BLOCKED_COUNTRIES
+        value: none
+      - key: AUTH_RATE_LIMIT
+        value: 10
+      - key: TOYBOX_RATE_LIMIT
+        value: 50
+      - key: MATCHMAKING_RATE_LIMIT
+        value: 30
+      - key: SESSIONS_RATE_LIMIT
+        value: 20
+      - key: PRESENCE_RATE_LIMIT
+        value: 100
+      - key: FRIENDS_RATE_LIMIT
+        value: 30
+      - key: STATS_RATE_LIMIT
+        value: 50
+      - key: PROFILE_RATE_LIMIT
+        value: 30
+      - key: ACHIEVEMENTS_RATE_LIMIT
+        value: 50
+      - key: ANALYTICS_RATE_LIMIT
+        value: 20
+      - key: ADMIN_RATE_LIMIT
+        value: 10
+      - key: NETWORKING_RATE_LIMIT
+        value: 100
+      - key: STEAM_RATE_LIMIT
+        value: 30
+      - key: SYNC_RATE_LIMIT
+        value: 20
+      - key: DB_MAX_CONNECTIONS
+        value: 100
+      - key: DB_IDLE_TIMEOUT
+        value: 60000
+      - key: DB_CONNECTION_TIMEOUT
+        value: 10000
+      - key: SUPABASE_TIMEOUT
+        value: 30000
+      - key: REDIS_TIMEOUT
+        value: 5000
+      - key: STEAM_API_TIMEOUT
+        value: 10000
+      - key: EMAIL_TIMEOUT
+        value: 30000
+
+# Optional: Redis for caching (add later for performance optimization)
+# - type: redis
+#   name: infinity-redis
+#   ipAllowList: [] # Only accessible by the web service

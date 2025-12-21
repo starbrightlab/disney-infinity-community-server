@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Disney Infinity 3.0 Community Server Configuration -->
+<!-- Place this file in your Disney Infinity 3.0 installation directory -->
+<!-- Typically: C:\Program Files (x86)\Disney Interactive Studios\Disney Infinity 3.0\ -->
+
+<InfinityConfig version="3.0">
+  <!-- Server Configuration -->
+  <Server>
+    <!-- Override Disney UGC endpoints to point to community server -->
+    <UGC>http://your-community-server.com/api/v1</UGC>
+    <Auth>http://your-community-server.com/api/v1/auth</Auth>
+    <Matchmaking>http://your-community-server.com/api/v1/matchmaking</Matchmaking>
+
+    <!-- CDN configuration for downloads -->
+    <CDN>
+      <Primary>http://your-community-server.com/api/v1</Primary>
+      <Fallback>https://cdn.community-infinity.com</Fallback>
+    </CDN>
+
+    <!-- Timeout settings (in milliseconds) -->
+    <Timeouts>
+      <Connection>10000</Connection>
+      <Request>30000</Request>
+      <Upload>120000</Upload>
+      <Download>60000</Download>
+    </Timeouts>
+  </Server>
+
+  <!-- Feature Flags -->
+  <Features>
+    <!-- Enable community UGC features -->
+    <UGCEnabled>true</UGCEnabled>
+    <CommunitySharing>true</CommunitySharing>
+    <UserGeneratedContent>true</UserGeneratedContent>
+    <RatingSystem>true</RatingSystem>
+    <TrendingContent>true</TrendingContent>
+
+    <!-- Disable Disney-specific features that may not work -->
+    <DisneyStore>false</DisneyStore>
+    <DisneyAccountLink>false</DisneyAccountLink>
+    <ParentalControls>true</ParentalControls>
+  </Features>
+
+  <!-- UGC Configuration -->
+  <UGC>
+    <!-- File size limits (in bytes) -->
+    <Limits>
+      <MaxToyboxSize>104857600</MaxToyboxSize> <!-- 100MB -->
+      <MaxScreenshotSize>5242880</MaxScreenshotSize> <!-- 5MB -->
+      <MaxDescriptionLength>1000</MaxDescriptionLength>
+      <MaxTitleLength>255</MaxTitleLength>
+    </Limits>
+
+    <!-- Supported file types -->
+    <SupportedFormats>
+      <Toybox>application/octet-stream</Toybox>
+      <Screenshot>image/png,image/jpeg,image/gif</Screenshot>
+    </SupportedFormats>
+
+    <!-- Content filtering -->
+    <ContentFilter>
+      <Enabled>true</Enabled>
+      <CheckFileHashes>true</CheckFileHashes>
+      <ModerateNewContent>true</ModerateNewContent>
+    </ContentFilter>
+  </UGC>
+
+  <!-- Authentication Configuration -->
+  <Authentication>
+    <!-- Token settings -->
+    <Tokens>
+      <AccessTokenExpiry>3600</AccessTokenExpiry> <!-- 1 hour -->
+      <RefreshTokenExpiry>604800</RefreshTokenExpiry> <!-- 7 days -->
+      <AutoRefresh>true</AutoRefresh>
+    </Tokens>
+
+    <!-- Account settings -->
+    <Accounts>
+      <AllowAnonymous>false</AllowAnonymous>
+      <RequireEmail>true</RequireEmail>
+      <AllowRegistration>true</AllowRegistration>
+    </Accounts>
+  </Authentication>
+
+  <!-- Network Configuration -->
+  <Network>
+    <!-- Proxy settings (leave empty for direct connection) -->
+    <Proxy>
+      <Enabled>false</Enabled>
+      <Host></Host>
+      <Port></Port>
+    </Proxy>
+
+    <!-- SSL/TLS settings -->
+    <SSL>
+      <VerifyCertificates>true</VerifyCertificates>
+      <AllowSelfSigned>false</AllowSelfSigned>
+    </SSL>
+
+    <!-- DNS override (alternative to hosts file) -->
+    <DNS>
+      <OverrideEnabled>false</OverrideEnabled>
+      <ServerMappings>
+        <!-- Add custom DNS mappings here if needed -->
+      </ServerMappings>
+    </DNS>
+  </Network>
+
+  <!-- Debug Configuration -->
+  <Debug>
+    <!-- Enable for troubleshooting -->
+    <Enabled>false</Enabled>
+    <LogLevel>info</LogLevel> <!-- error, warn, info, debug -->
+
+    <!-- Logging options -->
+    <Logging>
+      <NetworkRequests>true</NetworkRequests>
+      <UGCOperations>true</UGCOperations>
+      <Authentication>true</Authentication>
+      <FileOperations>true</FileOperations>
+    </Logging>
+
+    <!-- Performance monitoring -->
+    <Performance>
+      <Enabled>false</Enabled>
+      <TrackDownloadSpeed>true</TrackDownloadSpeed>
+      <TrackUploadSpeed>true</TrackUploadSpeed>
+    </Performance>
+  </Debug>
+
+  <!-- Localization -->
+  <Localization>
+    <Language>en</Language>
+    <Region>US</Region>
+  </Localization>
+
+  <!-- Update Configuration -->
+  <Updates>
+    <CheckForUpdates>true</CheckForUpdates>
+    <UpdateChannel>stable</UpdateChannel> <!-- stable, beta, dev -->
+    <AutoUpdate>false</AutoUpdate>
+  </Updates>
+</InfinityConfig>
