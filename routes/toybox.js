@@ -432,6 +432,70 @@ router.get('/trending', cacheMiddleware(900, (req) => {
     const { supabase } = require('../config/database');
     const { genre, limit = 20 } = req.query;
 
+    // For now, return recent popular toyboxes (simplified trending)
+    const { data: toyboxes, error } = await supabase
+      .from('toyboxes')
+      .select('id, title, creator_id, download_count, created_at')
+      .eq('status', 3)
+      .order('download_count', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(parseInt(limit));
+
+    if (error) {
+      winston.error('Trending fetch error:', error);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to fetch trending toyboxes'
+        }
+      });
+    }
+
+    // Get creator usernames
+    const creatorIds = [...new Set(toyboxes.map(t => t.creator_id))];
+    const { data: creators } = await supabase
+      .from('users')
+      .select('id, username')
+      .in('id', creatorIds);
+
+    const creatorMap = {};
+    creators?.forEach(creator => {
+      creatorMap[creator.id] = creator.username;
+    });
+
+    const items = toyboxes.map(toybox => ({
+      id: toybox.id,
+      name: toybox.title,
+      creator_display_name: creatorMap[toybox.creator_id] || 'Unknown',
+      downloads: { count: toybox.download_count || 0 },
+      likes: { count: 0 }, // TODO: Add likes count
+      rating: 0, // TODO: Add rating
+      created_at: toybox.created_at
+    }));
+
+    res.json(items);
+
+  } catch (err) {
+    const winston = require('winston');
+    winston.error('Trending fetch error:', err);
+    res.status(500).json({
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Failed to fetch trending toyboxes'
+      }
+    });
+  }
+});
+
+// Download toybox (public for published toyboxes)
+router.get('/trending', cacheMiddleware(900, (req) => {
+  const { genre, limit } = req.query;
+  return `GET:/api/v1/toybox/trending?genre=${genre || ''}&limit=${limit || 20}`;
+}), async (req, res) => {
+  try {
+    const { supabase } = require('../config/database');
+    const { genre, limit = 20 } = req.query;
+
     // Trending algorithm: weighted score based on downloads, ratings, and recency
     let queryText = `
       SELECT
