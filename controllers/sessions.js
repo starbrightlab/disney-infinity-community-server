@@ -564,8 +564,7 @@ const getSession = async (req, res) => {
       .select(`
         id, host_user_id, game_mode, region, max_players,
         current_players, player_ids, status, session_data,
-        created_at, started_at, ended_at,
-        users!game_sessions_host_user_id_fkey(username)
+        created_at, started_at, ended_at
       `)
       .eq('id', sessionId)
       .single();
@@ -579,8 +578,14 @@ const getSession = async (req, res) => {
       });
     }
 
-    // Fix the field name from the join
-    session.host_username = session.users?.username;
+    // Get host user details
+    const { data: hostUser, error: hostError } = await supabase
+      .from('users')
+      .select('username')
+      .eq('id', session.host_user_id)
+      .single();
+
+    session.host_username = hostUser?.username;
 
     // Get player details
     const { data: playersData, error: playersError } = await supabase
@@ -589,14 +594,27 @@ const getSession = async (req, res) => {
         user_id,
         player_status,
         joined_at,
-        disconnected_at,
-        users!session_players_user_id_fkey (
-          username,
-          profile_data
-        )
+        disconnected_at
       `)
       .eq('session_id', sessionId)
       .order('joined_at', { ascending: true });
+
+    // Get user details for players
+    const userIds = playersData?.map(p => p.user_id) || [];
+    let userDetails = {};
+    if (userIds.length > 0) {
+      const { data: usersData, error: usersError } = await supabase
+        .from('users')
+        .select('id, username, profile_data')
+        .in('id', userIds);
+
+      if (!usersError && usersData) {
+        userDetails = usersData.reduce((acc, user) => {
+          acc[user.id] = user;
+          return acc;
+        }, {});
+      }
+    }
 
     if (playersError) {
       winston.error('Failed to get player details:', playersError);
@@ -608,14 +626,17 @@ const getSession = async (req, res) => {
       });
     }
 
-    const players = playersData.map(player => ({
-      user_id: player.user_id,
-      username: player.users?.username,
-      status: player.player_status,
-      joined_at: player.joined_at,
-      disconnected_at: player.disconnected_at,
-      profile_data: player.users?.profile_data
-    }));
+    const players = playersData.map(player => {
+      const userDetail = userDetails[player.user_id] || {};
+      return {
+        user_id: player.user_id,
+        username: userDetail.username,
+        status: player.player_status,
+        joined_at: player.joined_at,
+        disconnected_at: player.disconnected_at,
+        profile_data: userDetail.profile_data
+      };
+    });
 
     const sessionData = session.session_data || {};
     const isPrivate = sessionData.isPrivate || false;
