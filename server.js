@@ -688,6 +688,23 @@ app.post('/api/v1/test/user-insert', async (req, res) => {
   }
 });
 
+app.get('/api/v1/test/jwt-simple', (req, res) => {
+  try {
+    const jwt = require('jsonwebtoken');
+    const token = jwt.sign({ test: 'data', timestamp: Date.now() }, 'test_secret');
+    res.json({
+      success: true,
+      token_length: token.length,
+      token_prefix: token.substring(0, 20) + '...'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 app.post('/api/v1/test/password-check', async (req, res) => {
   try {
     const { password, hash } = req.body;
