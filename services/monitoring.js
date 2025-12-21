@@ -197,9 +197,9 @@ class MonitoringService {
           : 0
       },
       health: {
-        status: errorRate < 5 ? 'healthy' : errorRate < 15 ? 'warning' : 'critical',
-        database: this.metrics.database.errors < 10,
-        memory: this.recordMemoryUsage() < 500 // Less than 500MB
+        status: errorRate < 20 ? 'healthy' : errorRate < 50 ? 'warning' : 'critical',
+        database: this.metrics.database.errors < 50,
+        memory: this.recordMemoryUsage() < 800 // Less than 800MB
       }
     };
   }
