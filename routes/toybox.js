@@ -159,19 +159,20 @@ router.get('/:id', downloadValidation, optionalAuth, downloadToybox);
 // Get toybox screenshot
 router.get('/:id/screenshot', downloadValidation, async (req, res) => {
   try {
-    const { query } = require('../config/database');
-    const { createClient } = require('@supabase/supabase-js');
+    const { supabase } = require('../config/database');
     const winston = require('winston');
 
     const { id } = req.params;
 
     // Get toybox screenshot info
-    const result = await query(
-      'SELECT screenshot, screenshot_metadata FROM toyboxes WHERE id = $1 AND status = 3',
-      [id]
-    );
+    const { data: toybox, error } = await supabase
+      .from('toyboxes')
+      .select('screenshot, screenshot_metadata')
+      .eq('id', id)
+      .eq('status', 3)
+      .single();
 
-    if (result.rows.length === 0 || !result.rows[0].screenshot) {
+    if (error || !toybox || !toybox.screenshot) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -180,23 +181,7 @@ router.get('/:id/screenshot', downloadValidation, async (req, res) => {
       });
     }
 
-    const toybox = result.rows[0];
-
-    // Download from Supabase (skip in test environment)
-    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
-      return res.status(501).json({
-        error: {
-          code: 'NOT_IMPLEMENTED',
-          message: 'Screenshot download not available in test environment'
-        }
-      });
-    }
-
-    const supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY
-    );
-
+    // Download from Supabase storage
     const { data, error } = await supabase.storage
       .from(process.env.SUPABASE_BUCKET || 'toyboxes')
       .download(toybox.screenshot);
@@ -237,7 +222,7 @@ router.get('/:id/screenshot', downloadValidation, async (req, res) => {
 // Rate toybox
 router.post('/:id/rate', authenticateToken, downloadValidation, async (req, res) => {
   try {
-    const { query } = require('../config/database');
+    const { supabase } = require('../config/database');
     const winston = require('winston');
     const { rating } = req.body;
 
@@ -253,12 +238,14 @@ router.post('/:id/rate', authenticateToken, downloadValidation, async (req, res)
     const { id } = req.params;
 
     // Check if toybox exists and is published
-    const toyboxResult = await query(
-      'SELECT id FROM toyboxes WHERE id = $1 AND status = 3',
-      [id]
-    );
+    const { data: toybox, error: toyboxError } = await supabase
+      .from('toyboxes')
+      .select('id')
+      .eq('id', id)
+      .eq('status', 3)
+      .single();
 
-    if (toyboxResult.rows.length === 0) {
+    if (toyboxError || !toybox) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -267,19 +254,37 @@ router.post('/:id/rate', authenticateToken, downloadValidation, async (req, res)
       });
     }
 
-    // Insert or update rating
-    await query(`
-      INSERT INTO toybox_ratings (toybox_id, user_id, rating)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (toybox_id, user_id)
-      DO UPDATE SET rating = EXCLUDED.rating, created_at = NOW()
-    `, [id, req.user.id, rating]);
+    // Insert or update rating using upsert
+    const { error: ratingError } = await supabase
+      .from('toybox_ratings')
+      .upsert({
+        toybox_id: id,
+        user_id: req.user.id,
+        rating: rating,
+        created_at: new Date().toISOString()
+      }, {
+        onConflict: 'toybox_id,user_id'
+      });
+
+    if (ratingError) {
+      winston.error('Rating upsert error:', ratingError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to save rating'
+        }
+      });
+    }
 
     // Get updated average rating
-    const avgResult = await query(
-      'SELECT AVG(rating) as average FROM toybox_ratings WHERE toybox_id = $1',
-      [id]
-    );
+    const { data: ratings, error: avgError } = await supabase
+      .from('toybox_ratings')
+      .select('rating')
+      .eq('toybox_id', id);
+
+    const averageRating = ratings && ratings.length > 0
+      ? ratings.reduce((sum, r) => sum + r.rating, 0) / ratings.length
+      : 0;
 
     winston.info(`Toybox rated: ${id} by ${req.user.username} (${rating} stars)`);
 
@@ -290,7 +295,7 @@ router.post('/:id/rate', authenticateToken, downloadValidation, async (req, res)
       toybox_id: id,
       user_id: req.user.id,
       rating: rating,
-      average_rating: parseFloat(avgResult.rows[0].average)
+      average_rating: parseFloat(averageRating.toFixed(2))
     });
 
   } catch (err) {
@@ -314,12 +319,14 @@ router.post('/:id/like', authenticateToken, downloadValidation, async (req, res)
     const { id } = req.params;
 
     // Check if toybox exists and is published
-    const toyboxResult = await query(
-      'SELECT id FROM toyboxes WHERE id = $1 AND status = 3',
-      [id]
-    );
+    const { data: toybox, error: toyboxError } = await supabase
+      .from('toyboxes')
+      .select('id')
+      .eq('id', id)
+      .eq('status', 3)
+      .single();
 
-    if (toyboxResult.rows.length === 0) {
+    if (toyboxError || !toybox) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -329,33 +336,68 @@ router.post('/:id/like', authenticateToken, downloadValidation, async (req, res)
     }
 
     // Check if already liked
-    const existingLike = await query(
-      'SELECT id FROM toybox_likes WHERE toybox_id = $1 AND user_id = $2',
-      [id, req.user.id]
-    );
+    const { data: existingLike, error: likeCheckError } = await supabase
+      .from('toybox_likes')
+      .select('id')
+      .eq('toybox_id', id)
+      .eq('user_id', req.user.id)
+      .single();
 
     let liked;
-    if (existingLike.rows.length > 0) {
-      // Unlike
-      await query(
-        'DELETE FROM toybox_likes WHERE toybox_id = $1 AND user_id = $2',
-        [id, req.user.id]
-      );
+    if (existingLike && !likeCheckError) {
+      // Unlike - delete the like
+      const { error: deleteError } = await supabase
+        .from('toybox_likes')
+        .delete()
+        .eq('toybox_id', id)
+        .eq('user_id', req.user.id);
+
+      if (deleteError) {
+        winston.error('Like delete error:', deleteError);
+        return res.status(500).json({
+          error: {
+            code: 'SERVER_ERROR',
+            message: 'Failed to unlike toybox'
+          }
+        });
+      }
       liked = false;
     } else {
-      // Like
-      await query(
-        'INSERT INTO toybox_likes (toybox_id, user_id) VALUES ($1, $2)',
-        [id, req.user.id]
-      );
+      // Like - insert new like
+      const { error: insertError } = await supabase
+        .from('toybox_likes')
+        .insert({
+          toybox_id: id,
+          user_id: req.user.id
+        });
+
+      if (insertError) {
+        winston.error('Like insert error:', insertError);
+        return res.status(500).json({
+          error: {
+            code: 'SERVER_ERROR',
+            message: 'Failed to like toybox'
+          }
+        });
+      }
       liked = true;
     }
 
     // Get updated like count
-    const countResult = await query(
-      'SELECT COUNT(*) as count FROM toybox_likes WHERE toybox_id = $1',
-      [id]
-    );
+    const { count: likesCount, error: countError } = await supabase
+      .from('toybox_likes')
+      .select('id', { count: 'exact', head: true })
+      .eq('toybox_id', id);
+
+    if (countError) {
+      winston.error('Like count error:', countError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get like count'
+        }
+      });
+    }
 
     winston.info(`Toybox ${liked ? 'liked' : 'unliked'}: ${id} by ${req.user.username}`);
 
@@ -364,8 +406,9 @@ router.post('/:id/like', authenticateToken, downloadValidation, async (req, res)
 
     res.json({
       toybox_id: id,
+      user_id: req.user.id,
       liked: liked,
-      likes_count: parseInt(countResult.rows[0].count)
+      likes_count: likesCount || 0
     });
 
   } catch (err) {
@@ -427,17 +470,45 @@ router.get('/trending', cacheMiddleware(900, (req) => {
 
     queryParams.push(parseInt(limit));
 
-    const result = await query(queryText, queryParams);
+    // For now, return recent popular toyboxes (simplified trending)
+    const { data: toyboxes, error } = await supabase
+      .from('toyboxes')
+      .select('id, title, creator_id, download_count, created_at')
+      .eq('status', 3)
+      .order('download_count', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(parseInt(limit));
 
-    const items = result.rows.map(row => ({
-      id: row.id,
-      name: row.title,
-      creator_display_name: row.creator_display_name,
-      downloads: { count: parseInt(row.download_count) },
-      likes: { count: parseInt(row.like_count) },
-      rating: parseFloat(row.average_rating),
-      created_at: row.created_at,
-      trending_score: parseFloat(row.trending_score)
+    if (error) {
+      winston.error('Trending fetch error:', error);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to fetch trending toyboxes'
+        }
+      });
+    }
+
+    // Get creator usernames
+    const creatorIds = [...new Set(toyboxes.map(t => t.creator_id))];
+    const { data: creators } = await supabase
+      .from('users')
+      .select('id, username')
+      .in('id', creatorIds);
+
+    const creatorMap = {};
+    creators?.forEach(creator => {
+      creatorMap[creator.id] = creator.username;
+    });
+
+    const items = toyboxes.map(toybox => ({
+      id: toybox.id,
+      name: toybox.title,
+      creator_display_name: creatorMap[toybox.creator_id] || 'Unknown',
+      downloads: { count: toybox.download_count || 0 },
+      likes: { count: 0 }, // TODO: Add likes count
+      rating: 0, // TODO: Add rating
+      created_at: toybox.created_at
     }));
 
     res.json(items);
@@ -457,32 +528,40 @@ router.get('/trending', cacheMiddleware(900, (req) => {
 // Get user's toyboxes
 router.get('/user/list', authenticateToken, async (req, res) => {
   try {
-    const { query } = require('../config/database');
+    const { supabase } = require('../config/database');
 
-    const result = await query(`
-      SELECT
-        id, title, description, status, created_at, updated_at, download_count,
-        (SELECT AVG(rating) FROM toybox_ratings WHERE toybox_id = toyboxes.id) as average_rating,
-        (SELECT COUNT(*) FROM toybox_ratings WHERE toybox_id = toyboxes.id) as rating_count,
-        (SELECT COUNT(*) FROM toybox_likes WHERE toybox_id = toyboxes.id) as like_count
-      FROM toyboxes
-      WHERE creator_id = $1
-      ORDER BY created_at DESC
-    `, [req.user.id]);
+    // Get user's toyboxes
+    const { data: toyboxes, error } = await supabase
+      .from('toyboxes')
+      .select('id, title, description, status, created_at, updated_at, download_count')
+      .eq('creator_id', req.user.id)
+      .order('created_at', { ascending: false });
 
-    const toyboxes = result.rows.map(row => ({
-      id: row.id,
-      title: row.title,
-      description: row.description,
-      status: row.status === 1 ? 'in_review' : row.status === 2 ? 'approved' : row.status === 3 ? 'published' : 'unknown',
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      downloads: { count: parseInt(row.download_count) },
-      likes: { count: parseInt(row.like_count) },
-      rating: parseFloat(row.average_rating || 0)
+    if (error) {
+      winston.error('User toyboxes fetch error:', error);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to fetch user toyboxes'
+        }
+      });
+    }
+
+    // For now, return basic info without ratings/likes counts
+    // TODO: Add ratings and likes counts in a future update
+    const formattedToyboxes = toyboxes.map(toybox => ({
+      id: toybox.id,
+      title: toybox.title,
+      description: toybox.description,
+      status: toybox.status === 1 ? 'in_review' : toybox.status === 2 ? 'approved' : toybox.status === 3 ? 'published' : 'unknown',
+      created_at: toybox.created_at,
+      updated_at: toybox.updated_at,
+      downloads: { count: toybox.download_count || 0 },
+      likes: { count: 0 }, // TODO: Add likes count
+      rating: 0 // TODO: Add rating
     }));
 
-    res.json(toyboxes);
+    res.json(formattedToyboxes);
 
   } catch (err) {
     const winston = require('winston');

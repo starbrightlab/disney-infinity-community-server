@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { query } = require('../config/database');
+const { supabase } = require('../config/database');
 const { requireAdmin, requireModerator } = require('../middleware/auth');
 const {
   getCleanupStats,
@@ -19,63 +19,101 @@ const monitoring = require('../services/monitoring');
 router.get('/stats', requireAdmin, async (req, res) => {
   try {
     // User stats
-    const userStats = await query(`
-      SELECT
-        COUNT(*) as total_users,
-        COUNT(CASE WHEN last_login > NOW() - INTERVAL '1 day' THEN 1 END) as active_today,
-        COUNT(CASE WHEN is_admin THEN 1 END) as admin_count,
-        COUNT(CASE WHEN is_moderator THEN 1 END) as moderator_count
-      FROM users
-    `);
+    const { data: users, error: userError } = await supabase
+      .from('users')
+      .select('last_login, is_admin, is_moderator');
+
+    if (userError) {
+      winston.error('User stats error:', userError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to fetch user stats'
+        }
+      });
+    }
+
+    const now = new Date();
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    const userStats = {
+      total_users: users.length,
+      active_today: users.filter(u => u.last_login && new Date(u.last_login) > oneDayAgo).length,
+      admin_count: users.filter(u => u.is_admin).length,
+      moderator_count: users.filter(u => u.is_moderator).length
+    };
 
     // Toybox stats
-    const toyboxStats = await query(`
-      SELECT
-        COUNT(*) as total_toyboxes,
-        COUNT(CASE WHEN status = 1 THEN 1 END) as pending_review,
-        COUNT(CASE WHEN status = 2 THEN 1 END) as approved,
-        COUNT(CASE WHEN status = 3 THEN 1 END) as published,
-        COUNT(CASE WHEN featured THEN 1 END) as featured
-      FROM toyboxes
-    `);
+    const { data: toyboxes, error: toyboxError } = await supabase
+      .from('toyboxes')
+      .select('status, featured');
 
-    // Download stats
-    const downloadStats = await query(`
-      SELECT
-        SUM(download_count) as total_downloads,
-        COUNT(CASE WHEN downloaded_at > NOW() - INTERVAL '1 day' THEN 1 END) as downloads_today
-      FROM toybox_downloads
-    `);
+    if (toyboxError) {
+      winston.error('Toybox stats error:', toyboxError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to fetch toybox stats'
+        }
+      });
+    }
+
+    const toyboxStats = {
+      total_toyboxes: toyboxes.length,
+      pending_review: toyboxes.filter(t => t.status === 1).length,
+      approved: toyboxes.filter(t => t.status === 2).length,
+      published: toyboxes.filter(t => t.status === 3).length,
+      featured: toyboxes.filter(t => t.featured).length
+    };
+
+    // Download stats (simplified - toyboxes have download_count field)
+    const { data: downloads, error: downloadError } = await supabase
+      .from('toyboxes')
+      .select('download_count');
+
+    const totalDownloads = downloads?.reduce((sum, t) => sum + (t.download_count || 0), 0) || 0;
+
+    const downloadStats = {
+      total_downloads: totalDownloads,
+      downloads_today: 0 // TODO: Implement download tracking with timestamps
+    };
 
     // Rating stats
-    const ratingStats = await query(`
-      SELECT
-        COUNT(*) as total_ratings,
-        AVG(rating) as average_rating
-      FROM toybox_ratings
-    `);
+    const { data: ratings, error: ratingError } = await supabase
+      .from('toybox_ratings')
+      .select('rating');
+
+    const totalRatings = ratings?.length || 0;
+    const averageRating = totalRatings > 0
+      ? ratings.reduce((sum, r) => sum + r.rating, 0) / totalRatings
+      : 0;
+
+    const ratingStats = {
+      total_ratings: totalRatings,
+      average_rating: averageRating
+    };
 
     res.json({
       users: {
-        total: parseInt(userStats.rows[0].total_users),
-        active_today: parseInt(userStats.rows[0].active_today),
-        admin_count: parseInt(userStats.rows[0].admin_count),
-        moderator_count: parseInt(userStats.rows[0].moderator_count)
+        total: userStats.total_users,
+        active_today: userStats.active_today,
+        admin_count: userStats.admin_count,
+        moderator_count: userStats.moderator_count
       },
       toyboxes: {
-        total: parseInt(toyboxStats.rows[0].total_toyboxes),
-        published: parseInt(toyboxStats.rows[0].published),
-        pending_review: parseInt(toyboxStats.rows[0].pending_review),
-        approved: parseInt(toyboxStats.rows[0].approved),
-        featured: parseInt(toyboxStats.rows[0].featured)
+        total: toyboxStats.total_toyboxes,
+        published: toyboxStats.published,
+        pending_review: toyboxStats.pending_review,
+        approved: toyboxStats.approved,
+        featured: toyboxStats.featured
       },
       downloads: {
-        total: parseInt(downloadStats.rows[0].total_downloads || 0),
-        today: parseInt(downloadStats.rows[0].downloads_today || 0)
+        total: downloadStats.total_downloads,
+        today: downloadStats.downloads_today
       },
       ratings: {
-        total: parseInt(ratingStats.rows[0].total_ratings || 0),
-        average: parseFloat(ratingStats.rows[0].average_rating || 0)
+        total: ratingStats.total_ratings,
+        average: parseFloat(ratingStats.average_rating.toFixed(2))
       }
     });
 
@@ -115,23 +153,33 @@ router.put('/toybox/:id/status', requireModerator, async (req, res) => {
     const numericStatus = validStatuses[status];
 
     // Update toybox status
-    const result = await query(`
-      UPDATE toyboxes
-      SET status = $1, updated_at = NOW()
-      WHERE id = $2
-      RETURNING id, title, status, creator_id
-    `, [numericStatus, id]);
+    const { data: toybox, error: updateError } = await supabase
+      .from('toyboxes')
+      .update({
+        status: numericStatus,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select('id, title, status, creator_id')
+      .single();
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
+    if (updateError || !toybox) {
+      if (updateError?.code === 'PGRST116') {
+        return res.status(404).json({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Toybox not found'
+          }
+        });
+      }
+      winston.error('Toybox status update error:', updateError);
+      return res.status(500).json({
         error: {
-          code: 'NOT_FOUND',
-          message: 'Toybox not found'
+          code: 'SERVER_ERROR',
+          message: 'Failed to update toybox status'
         }
       });
     }
-
-    const toybox = result.rows[0];
 
     winston.info(`Toybox moderated: ${toybox.title} (${id}) set to ${status} by ${req.user.username}`);
 
@@ -160,24 +208,45 @@ router.delete('/toybox/:id', requireAdmin, async (req, res) => {
     const { createClient } = require('@supabase/supabase-js');
 
     // Get toybox info for cleanup
-    const toyboxResult = await query(
-      'SELECT file_path, screenshot FROM toyboxes WHERE id = $1',
-      [id]
-    );
+    const { data: toybox, error: fetchError } = await supabase
+      .from('toyboxes')
+      .select('file_path, screenshot')
+      .eq('id', id)
+      .single();
 
-    if (toyboxResult.rows.length === 0) {
-      return res.status(404).json({
+    if (fetchError || !toybox) {
+      if (fetchError?.code === 'PGRST116') {
+        return res.status(404).json({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Toybox not found'
+          }
+        });
+      }
+      winston.error('Toybox fetch error:', fetchError);
+      return res.status(500).json({
         error: {
-          code: 'NOT_FOUND',
-          message: 'Toybox not found'
+          code: 'SERVER_ERROR',
+          message: 'Failed to fetch toybox'
         }
       });
     }
 
-    const toybox = toyboxResult.rows[0];
-
     // Delete from database
-    await query('DELETE FROM toyboxes WHERE id = $1', [id]);
+    const { error: deleteError } = await supabase
+      .from('toyboxes')
+      .delete()
+      .eq('id', id);
+
+    if (deleteError) {
+      winston.error('Toybox delete error:', deleteError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to delete toybox'
+        }
+      });
+    }
 
     // Clean up files from Supabase (skip in test environment)
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
@@ -218,28 +287,48 @@ router.delete('/toybox/:id', requireAdmin, async (req, res) => {
 // Get pending reviews
 router.get('/reviews/pending', requireModerator, async (req, res) => {
   try {
-    const result = await query(`
-      SELECT
-        t.id, t.title, t.description, t.created_at, t.file_size,
-        u.username as creator_username,
-        u.email as creator_email
-      FROM toyboxes t
-      LEFT JOIN users u ON t.creator_id = u.id
-      WHERE t.status = 1
-      ORDER BY t.created_at ASC
-    `);
+    const { data: toyboxes, error } = await supabase
+      .from('toyboxes')
+      .select('id, title, description, created_at, file_size, creator_id')
+      .eq('status', 1)
+      .order('created_at', { ascending: true });
 
-    const pendingReviews = result.rows.map(row => ({
-      id: row.id,
-      title: row.title,
-      description: row.description,
-      created_at: row.created_at,
-      file_size: parseInt(row.file_size),
-      creator: {
-        username: row.creator_username,
-        email: row.creator_email
+    if (error) {
+      winston.error('Pending reviews fetch error:', error);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to fetch pending reviews'
+        }
+      });
+    }
+
+    // Get creator info
+    const creatorIds = [...new Set(toyboxes.map(t => t.creator_id))];
+    const { data: creators } = await supabase
+      .from('users')
+      .select('id, username, email')
+      .in('id', creatorIds);
+
+    const creatorMap = {};
+    creators?.forEach(creator => {
+      creatorMap[creator.id] = creator;
+    });
+
+    const pendingReviews = toyboxes.map(toybox => {
+      const creator = creatorMap[toybox.creator_id] || {};
+      return {
+        id: toybox.id,
+        title: toybox.title,
+        description: toybox.description,
+        created_at: toybox.created_at,
+        file_size: toybox.file_size || 0,
+        creator: {
+          username: creator.username,
+          email: creator.email
+        }
       }
-    }));
+    });
 
     res.json({
       pending_reviews: pendingReviews,
@@ -272,23 +361,33 @@ router.put('/toybox/:id/feature', requireModerator, async (req, res) => {
       });
     }
 
-    const result = await query(`
-      UPDATE toyboxes
-      SET featured = $1, updated_at = NOW()
-      WHERE id = $2
-      RETURNING id, title, featured
-    `, [featured, id]);
+    const { data: toybox, error: updateError } = await supabase
+      .from('toyboxes')
+      .update({
+        featured: featured,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select('id, title, featured')
+      .single();
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
+    if (updateError || !toybox) {
+      if (updateError?.code === 'PGRST116') {
+        return res.status(404).json({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Toybox not found'
+          }
+        });
+      }
+      winston.error('Toybox feature update error:', updateError);
+      return res.status(500).json({
         error: {
-          code: 'NOT_FOUND',
-          message: 'Toybox not found'
+          code: 'SERVER_ERROR',
+          message: 'Failed to update toybox feature status'
         }
       });
     }
-
-    const toybox = result.rows[0];
 
     winston.info(`Toybox ${featured ? 'featured' : 'unfeatured'}: ${toybox.title} (${id}) by ${req.user.username}`);
 
