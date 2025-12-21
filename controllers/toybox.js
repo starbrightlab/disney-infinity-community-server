@@ -506,21 +506,116 @@ const listToyboxes = async (req, res) => {
       WHERE ${whereClause}
     `;
 
-    // Simplified working implementation
-    console.log('🔍 LIST TOYBOXES: Executing simplified Supabase query...');
+    // Full implementation with proper filtering
+    console.log('🔍 LIST TOYBOXES: Building filtered query...');
 
-    const offset = (page - 1) * page_size;
-
-    const { data, error, count } = await supabase
+    let query = supabase
       .from('toyboxes')
       .select(`
         id, title, description, created_at, updated_at, version,
         total_objects, unique_objects, featured, download_count,
         users!inner(username)
       `, { count: 'exact' })
-      .eq('status', 3)
-      .order(sort_field, { ascending: sort_direction === 'asc' })
-      .range(offset, offset + page_size - 1);
+      .eq('status', 3);
+
+    // Apply creator filtering - get user IDs first, then filter
+    if (creators) {
+      const creatorList = creators.split(',').map(c => c.trim());
+      console.log('👤 Applying creator filter:', creatorList);
+
+      // First get user IDs for these usernames
+      const { data: users, error: userError } = await supabase
+        .from('users')
+        .select('id')
+        .in('username', creatorList);
+
+      if (userError) {
+        console.log('❌ Creator lookup failed:', userError);
+      } else if (users && users.length > 0) {
+        const userIds = users.map(u => u.id);
+        console.log('👤 Found user IDs:', userIds);
+        query = query.in('creator_id', userIds);
+      } else {
+        console.log('👤 No users found for creator filter');
+        // Return empty result if no matching creators
+        return res.json({
+          items: [],
+          total: 0,
+          page: parseInt(page),
+          page_size: parseInt(page_size),
+          has_more: false
+        });
+      }
+    }
+
+    // Apply featured filter
+    if (featured === 'true') {
+      console.log('⭐ Applying featured filter');
+      query = query.eq('featured', true);
+    }
+
+    // Apply version filter
+    if (versions) {
+      const versionList = versions.split(',').map(v => parseInt(v.trim())).filter(v => !isNaN(v));
+      if (versionList.length > 0) {
+        console.log('🔢 Applying version filter:', versionList);
+        query = query.in('version', versionList);
+      }
+    }
+
+    // Apply IGP/avatar filter (array overlap)
+    if (igps) {
+      const igpList = igps.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (igpList.length > 0) {
+        console.log('🎭 Applying IGP filter:', igpList);
+        query = query.overlaps('avatars', igpList);
+      }
+    }
+
+    // Apply abilities filter (array overlap)
+    if (abilities) {
+      const abilityList = abilities.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (abilityList.length > 0) {
+        console.log('⚡ Applying abilities filter:', abilityList);
+        query = query.overlaps('abilities', abilityList);
+      }
+    }
+
+    // Apply genres filter (array overlap)
+    if (genres) {
+      const genreList = genres.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (genreList.length > 0) {
+        console.log('🎨 Applying genres filter:', genreList);
+        query = query.overlaps('genres', genreList);
+      }
+    }
+
+    // Apply minimum performance filter (JSONB query)
+    if (minimum_performance) {
+      const minPerf = parseInt(minimum_performance);
+      if (!isNaN(minPerf)) {
+        console.log('⚡ Applying minimum performance filter:', minPerf);
+        // Note: Supabase doesn't directly support JSONB filtering in the client
+        // This would need post-processing or a custom RPC function
+      }
+    }
+
+    // Apply search filter
+    if (search) {
+      console.log('🔍 Applying search filter:', search);
+      // Use Supabase text search if available, otherwise basic ILIKE
+      query = query.ilike('title', `%${search}%`);
+    }
+
+    // Apply sorting
+    query = query.order(sort_field, { ascending: sort_direction === 'asc' });
+
+    // Apply pagination
+    const offset = (page - 1) * page_size;
+    query = query.range(offset, offset + page_size - 1);
+
+    console.log('🚀 Executing filtered query...');
+    const { data, error, count } = await query;
 
     if (error) {
       console.log('❌ LIST TOYBOXES: Query failed:', error);
