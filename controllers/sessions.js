@@ -347,30 +347,53 @@ const joinSession = async (req, res) => {
     const newPlayerIds = [...session.player_ids, userId];
     const newPlayerCount = session.current_players + 1;
 
-    await transaction(async (client) => {
-      // Update session
-      await client.query(`
-        UPDATE game_sessions
-        SET player_ids = $1, current_players = $2, updated_at = NOW()
-        WHERE id = $3
-      `, [newPlayerIds, newPlayerCount, sessionId]);
+    // Update session
+    const sessionUpdateData = {
+      player_ids: newPlayerIds,
+      current_players: newPlayerCount,
+      updated_at: new Date().toISOString()
+    };
 
-      // If session is now full, start it
-      if (newPlayerCount >= session.max_players) {
-        await client.query(`
-          UPDATE game_sessions
-          SET status = 'active', started_at = NOW()
-          WHERE id = $1
-        `, [sessionId]);
-      }
+    // If session is now full, start it
+    if (newPlayerCount >= session.max_players) {
+      sessionUpdateData.status = 'active';
+      sessionUpdateData.started_at = new Date().toISOString();
+    }
 
-      // Add player record
-      await client.query(`
-        INSERT INTO session_players (
-          session_id, user_id, player_status, joined_at
-        ) VALUES ($1, $2, 'joined', NOW())
-      `, [sessionId, userId]);
-    });
+    const { error: updateSessionError } = await supabase
+      .from('game_sessions')
+      .update(sessionUpdateData)
+      .eq('id', sessionId);
+
+    if (updateSessionError) {
+      winston.error('Failed to update session for join:', updateSessionError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to update session'
+        }
+      });
+    }
+
+    // Add player record
+    const { error: addPlayerError } = await supabase
+      .from('session_players')
+      .insert([{
+        session_id: sessionId,
+        user_id: userId,
+        player_status: 'joined',
+        joined_at: new Date().toISOString()
+      }]);
+
+    if (addPlayerError) {
+      winston.error('Failed to add player to session:', addPlayerError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to add player to session'
+        }
+      });
+    }
 
     winston.info(`User ${userId} joined session ${sessionId}`);
 
@@ -431,39 +454,75 @@ const leaveSession = async (req, res) => {
     const newPlayerIds = session.player_ids.filter(id => id !== userId);
     const newPlayerCount = session.current_players - 1;
 
-    await transaction(async (client) => {
-      if (newPlayerCount === 0) {
-        // Last player leaving, end the session
-        await client.query(`
-          UPDATE game_sessions
-          SET status = 'completed', ended_at = NOW(), updated_at = NOW()
-          WHERE id = $1
-        `, [sessionId]);
-      } else {
-        // Update session player list
-        await client.query(`
-          UPDATE game_sessions
-          SET player_ids = $1, current_players = $2, updated_at = NOW()
-          WHERE id = $3
-        `, [newPlayerIds, newPlayerCount, sessionId]);
+    // Update session
+    if (newPlayerCount === 0) {
+      // Last player leaving, end the session
+      const { error: endSessionError } = await supabase
+        .from('game_sessions')
+        .update({
+          status: 'completed',
+          ended_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', sessionId);
 
-        // If host is leaving, assign new host
-        if (session.host_user_id === userId && newPlayerCount > 0) {
-          await client.query(`
-            UPDATE game_sessions
-            SET host_user_id = $1
-            WHERE id = $2
-          `, [newPlayerIds[0], sessionId]);
-        }
+      if (endSessionError) {
+        winston.error('Failed to end session:', endSessionError);
+        return res.status(500).json({
+          error: {
+            code: 'SERVER_ERROR',
+            message: 'Failed to end session'
+          }
+        });
+      }
+    } else {
+      // Update session player list
+      const updateData = {
+        player_ids: newPlayerIds,
+        current_players: newPlayerCount,
+        updated_at: new Date().toISOString()
+      };
+
+      // If host is leaving, assign new host
+      if (session.host_user_id === userId && newPlayerCount > 0) {
+        updateData.host_user_id = newPlayerIds[0];
       }
 
-      // Update player status
-      await client.query(`
-        UPDATE session_players
-        SET player_status = 'left', disconnected_at = NOW()
-        WHERE session_id = $1 AND user_id = $2
-      `, [sessionId, userId]);
-    });
+      const { error: updateSessionError } = await supabase
+        .from('game_sessions')
+        .update(updateData)
+        .eq('id', sessionId);
+
+      if (updateSessionError) {
+        winston.error('Failed to update session:', updateSessionError);
+        return res.status(500).json({
+          error: {
+            code: 'SERVER_ERROR',
+            message: 'Failed to update session'
+          }
+        });
+      }
+    }
+
+    // Update player status
+    const { error: updatePlayerError } = await supabase
+      .from('session_players')
+      .update({
+        player_status: 'left',
+        disconnected_at: new Date().toISOString()
+      })
+      .eq('session_id', sessionId)
+      .eq('user_id', userId);
+
+    if (updatePlayerError) {
+      winston.error('Failed to update player status:', updatePlayerError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to update player status'
+        }
+      });
+    }
 
     winston.info(`User ${userId} left session ${sessionId}`);
 
