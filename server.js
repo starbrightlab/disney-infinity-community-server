@@ -464,7 +464,8 @@ app.get('/api/v1/info', (req, res) => {
 
 // Import routes
 const authRoutes = require('./routes/auth');
-const toyboxRoutes = require('./routes/toybox');
+const disneyUgcRoutes = require('./routes/disney-ugc'); // PRIMARY: Disney UGC API routes
+const toyboxRoutes = require('./routes/toybox'); // DEPRECATED: Legacy routes for backward compatibility
 const adminRoutes = require('./routes/admin');
 const matchmakingRoutes = require('./routes/matchmaking');
 const sessionsRoutes = require('./routes/sessions');
@@ -572,8 +573,14 @@ testConnection().then(connected => {
 });
 
 // Mount routes with rate limiting
+
+// PRIMARY: Disney UGC API routes (matches original Disney URL structure)
+// Supports: /{version}/{product}/{visibility}/toybox
+app.use('/', rateLimiters.general, disneyUgcRoutes);
+console.log('✅ Disney UGC API routes mounted at / (PRIMARY)');
+
+// Modern API routes (for non-UGC endpoints)
 app.use('/api/v1/auth', rateLimiters.auth, authRoutes);
-app.use('/api/v1/toybox', rateLimiters.general, toyboxRoutes);
 app.use('/api/v1/admin', rateLimiters.admin, adminRoutes);
 app.use('/api/v1/matchmaking', rateLimiters.general, matchmakingRoutes);
 app.use('/api/v1/sessions', rateLimiters.general, sessionsRoutes);
@@ -586,6 +593,11 @@ app.use('/api/v1/profile', rateLimiters.general, profileRoutes);
 app.use('/api/v1/achievements', rateLimiters.general, achievementsRoutes);
 app.use('/api/v1/sync', rateLimiters.general, syncRoutes);
 app.use('/api/v1/analytics', rateLimiters.general, analyticsRoutes);
+
+// LEGACY: Backward compatibility for /api/v1/toybox endpoints (if needed for tests)
+// This is DEPRECATED - game client should use Disney format
+app.use('/api/v1/toybox', rateLimiters.general, toyboxRoutes);
+console.log('⚠️ Legacy /api/v1/toybox routes mounted (DEPRECATED)');
 
 // Test endpoints for debugging (remove after fixing login)
 app.get('/api/v1/test/ping', (req, res) => {
