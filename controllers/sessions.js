@@ -283,33 +283,49 @@ const joinSession = async (req, res) => {
     }
 
     // Check if user is in another active session
-    const { data: userSessionCheck, error: userSessionError } = await supabase
-      .from('session_players')
-      .select(`
-        game_sessions!inner (
-          id
-        )
-      `)
-      .eq('user_id', userId)
-      .neq('session_id', sessionId)
-      .in('game_sessions.status', ['waiting', 'active']);
+    let otherActiveSession = null;
+    try {
+      const { data: userSessionPlayers, error: userSessionError } = await supabase
+        .from('session_players')
+        .select('session_id')
+        .eq('user_id', userId)
+        .neq('session_id', sessionId);
 
-    if (userSessionError) {
-      winston.error('Failed to check user sessions:', userSessionError);
-      return res.status(500).json({
-        error: {
-          code: 'SERVER_ERROR',
-          message: 'Failed to check user sessions'
+      if (userSessionError) {
+        winston.warn('Could not check user existing sessions, proceeding anyway:', userSessionError.message);
+      } else if (userSessionPlayers && userSessionPlayers.length > 0) {
+        // Check if any of these sessions are active
+        const otherSessionIds = userSessionPlayers.map(sp => sp.session_id);
+        const { data: activeOtherSessions, error: activeError } = await supabase
+          .from('game_sessions')
+          .select('id, status')
+          .in('id', otherSessionIds)
+          .in('status', ['waiting', 'active'])
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (activeError) {
+          winston.error('Failed to check active other sessions:', activeError);
+          return res.status(500).json({
+            error: {
+              code: 'SERVER_ERROR',
+              message: 'Failed to check user sessions'
+            }
+          });
         }
-      });
+
+        otherActiveSession = activeOtherSessions && activeOtherSessions.length > 0 ? activeOtherSessions[0] : null;
+      }
+    } catch (err) {
+      winston.warn('Error checking user other sessions, proceeding anyway:', err.message);
     }
 
-    if (userSessionCheck && userSessionCheck.length > 0) {
+    if (otherActiveSession) {
       return res.status(409).json({
         error: {
           code: 'CONFLICT',
           message: 'User is already in another session',
-          current_session_id: userSessionCheck[0].game_sessions.id
+          current_session_id: otherActiveSession.id
         }
       });
     }
