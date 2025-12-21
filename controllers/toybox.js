@@ -592,15 +592,9 @@ const listToyboxes = async (req, res) => {
       }
     }
 
-    // Apply minimum performance filter (JSONB query)
-    if (minimum_performance) {
-      const minPerf = parseInt(minimum_performance);
-      if (!isNaN(minPerf)) {
-        console.log('⚡ Applying minimum performance filter:', minPerf);
-        // Note: Supabase doesn't directly support JSONB filtering in the client
-        // This would need post-processing or a custom RPC function
-      }
-    }
+    // Note: Performance filtering requires JSONB queries which are complex in Supabase
+    // TODO: Implement performance filtering as a future enhancement
+    // This would require either post-processing or custom RPC functions
 
     // Apply search filter
     if (search) {
