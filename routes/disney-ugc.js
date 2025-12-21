@@ -87,38 +87,7 @@ router.post('/:version/:product/public/toybox', authenticateToken, upload.fields
   }
 });
 
-/**
- * Get specific public toybox
- * GET /{version}/{product}/public/toybox/{id}
- * 
- * Accept header determines response:
- * - application/octet-stream: Returns binary toybox file
- * - application/json: Returns metadata
- */
-router.get('/:version/:product/public/toybox/:id', optionalAuth, disneyController.downloadToybox);
-
-/**
- * Get toybox screenshot
- * GET /{version}/{product}/public/toybox/{id}/screenshot
- * 
- * Returns: PNG/JPEG image with X-Binary-Metadata header
- */
-router.get('/:version/:product/public/toybox/:id/screenshot', disneyController.getScreenshot);
-
-/**
- * Like a toybox
- * POST /{version}/{product}/public/toybox/{id}/like
- * 
- * Returns: Like count and user's like status
- */
-router.post('/:version/:product/public/toybox/:id/like', authenticateToken, async (req, res, next) => {
-  await disneyController.likeToybox(req, res, next);
-  
-  // Clear cache for this toybox
-  if (res.statusCode >= 200 && res.statusCode < 300) {
-    cacheHelpers.clearToyboxCache(req.params.id);
-  }
-});
+// IMPORTANT: Specific routes (trending, search) must come BEFORE parameterized routes (/:id)
 
 /**
  * Get trending toyboxes
@@ -155,11 +124,46 @@ router.get('/:version/:product/public/toybox/trending/:genre', cacheMiddleware(9
  */
 router.get('/:version/:product/public/toybox/search', disneyController.searchToyboxes);
 
+// NOW parameterized routes can come after specific ones
+
+/**
+ * Get specific public toybox
+ * GET /{version}/{product}/public/toybox/{id}
+ * 
+ * Accept header determines response:
+ * - application/octet-stream: Returns binary toybox file
+ * - application/json: Returns metadata
+ */
+router.get('/:version/:product/public/toybox/:id', optionalAuth, disneyController.downloadToybox);
+
+/**
+ * Get toybox screenshot
+ * GET /{version}/{product}/public/toybox/{id}/screenshot
+ * 
+ * Returns: PNG/JPEG image with X-Binary-Metadata header
+ */
+router.get('/:version/:product/public/toybox/:id/screenshot', disneyController.getScreenshot);
+
 /**
  * Get toybox object counts
  * GET /{version}/{product}/public/toybox/{id}/object_counts
  */
 router.get('/:version/:product/public/toybox/:id/object_counts', disneyController.getObjectCounts);
+
+/**
+ * Like a toybox
+ * POST /{version}/{product}/public/toybox/{id}/like
+ * 
+ * Returns: Like count and user's like status
+ */
+router.post('/:version/:product/public/toybox/:id/like', authenticateToken, async (req, res, next) => {
+  await disneyController.likeToybox(req, res, next);
+  
+  // Clear cache for this toybox
+  if (res.statusCode >= 200 && res.statusCode < 300) {
+    cacheHelpers.clearToyboxCache(req.params.id);
+  }
+});
 
 // ============================================================================
 // PRIVATE TOYBOX ENDPOINTS
