@@ -442,14 +442,6 @@ const leaveSession = async (req, res) => {
     }
 
     // Check if user is in this session
-    console.log('DEBUG leaveSession:', {
-      userId,
-      playerIds: session.player_ids,
-      includesCheck: session.player_ids.includes(userId),
-      playerIdsType: typeof session.player_ids,
-      userIdType: typeof userId
-    });
-
     if (!session.player_ids.includes(userId)) {
       return res.status(409).json({
         error: {
