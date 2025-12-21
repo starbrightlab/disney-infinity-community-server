@@ -192,32 +192,30 @@ const uploadToybox = async (req, res) => {
         message: 'Toybox uploaded successfully and is pending review'
       });
 
-    } catch (err) {
-      // Clean up uploaded files on error
-      if (contentUpload?.path && supabase) {
-        try {
-          await supabase.storage
-            .from(process.env.SUPABASE_BUCKET || 'toyboxes')
-            .remove([contentUpload.path]);
-        } catch (cleanupErr) {
-          winston.warn('Failed to cleanup content file:', cleanupErr.message);
-        }
-      }
-      if (screenshotPath && supabase) {
-        try {
-          await supabase.storage
-            .from(process.env.SUPABASE_BUCKET || 'toyboxes')
-            .remove([screenshotPath]);
-        } catch (cleanupErr) {
-          winston.warn('Failed to cleanup screenshot:', cleanupErr.message);
-        }
-      }
-
-      throw err;
-    }
 
   } catch (err) {
     winston.error('Toybox upload error:', err);
+
+    // Clean up uploaded files on error
+    if (contentUpload?.path && supabase) {
+      try {
+        await supabase.storage
+          .from(process.env.SUPABASE_BUCKET || 'toyboxes')
+          .remove([contentUpload.path]);
+      } catch (cleanupErr) {
+        winston.warn('Failed to cleanup content file:', cleanupErr.message);
+      }
+    }
+    if (screenshotPath && supabase) {
+      try {
+        await supabase.storage
+          .from(process.env.SUPABASE_BUCKET || 'toyboxes')
+          .remove([screenshotPath]);
+      } catch (cleanupErr) {
+        winston.warn('Failed to cleanup screenshot:', cleanupErr.message);
+      }
+    }
+
     res.status(500).json({
       error: {
         code: 'SERVER_ERROR',
