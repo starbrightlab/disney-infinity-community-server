@@ -252,25 +252,17 @@ const downloadToybox = async (req, res) => {
     const acceptHeader = req.headers.accept;
 
     // Get toybox metadata
-    const toyboxResult = await query(`
-      SELECT
-        t.*,
-        u.username as creator_display_name,
-        COALESCE(AVG(r.rating), 0) as average_rating,
-        COUNT(DISTINCT r.id) as rating_count,
-        COUNT(DISTINCT l.id) as like_count,
-        CASE WHEN $2::uuid IS NOT NULL THEN
-          EXISTS(SELECT 1 FROM toybox_likes WHERE toybox_id = t.id AND user_id = $2)
-        ELSE false END as liked_by_user
-      FROM toyboxes t
-      LEFT JOIN users u ON t.creator_id = u.id
-      LEFT JOIN toybox_ratings r ON t.id = r.toybox_id
-      LEFT JOIN toybox_likes l ON t.id = l.toybox_id
-      WHERE t.id = $1 AND t.status = 3  -- published only
-      GROUP BY t.id, u.username
-    `, [id, req.user?.id]);
+    const { data: toybox, error: toyboxError } = await supabase
+      .from('toyboxes')
+      .select(`
+        *,
+        users!inner(username)
+      `)
+      .eq('id', id)
+      .eq('status', 3) // published only
+      .single();
 
-    if (toyboxResult.rows.length === 0) {
+    if (toyboxError || !toybox) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -279,7 +271,41 @@ const downloadToybox = async (req, res) => {
       });
     }
 
-    const toybox = toyboxResult.rows[0];
+    // Get ratings statistics
+    const { data: ratings } = await supabase
+      .from('toybox_ratings')
+      .select('rating')
+      .eq('toybox_id', id);
+
+    const averageRating = ratings && ratings.length > 0
+      ? ratings.reduce((sum, r) => sum + r.rating, 0) / ratings.length
+      : 0;
+
+    // Get like count
+    const { count: likeCount } = await supabase
+      .from('toybox_likes')
+      .select('*', { count: 'exact', head: true })
+      .eq('toybox_id', id);
+
+    // Check if current user liked this toybox
+    let likedByUser = false;
+    if (req.user?.id) {
+      const { data: userLike } = await supabase
+        .from('toybox_likes')
+        .select('id')
+        .eq('toybox_id', id)
+        .eq('user_id', req.user.id)
+        .single();
+
+      likedByUser = !!userLike;
+    }
+
+    // Add computed fields to toybox object
+    toybox.creator_display_name = toybox.users.username;
+    toybox.average_rating = averageRating;
+    toybox.rating_count = ratings ? ratings.length : 0;
+    toybox.like_count = likeCount || 0;
+    toybox.liked_by_user = likedByUser;
 
     // Check if requesting binary data
     if (acceptHeader === 'application/octet-stream') {
@@ -308,15 +334,19 @@ const downloadToybox = async (req, res) => {
       }
 
       // Record download
-      await query(`
-        INSERT INTO toybox_downloads (toybox_id, user_id, ip_address, user_agent)
-        VALUES ($1, $2, $3, $4)
-      `, [
-        id,
-        req.user?.id || null,
-        req.ip,
-        req.get('User-Agent')
-      ]);
+      const { error: downloadError } = await supabase
+        .from('toybox_downloads')
+        .insert([{
+          toybox_id: id,
+          user_id: req.user?.id || null,
+          ip_address: req.ip,
+          user_agent: req.get('User-Agent')
+        }]);
+
+      if (downloadError) {
+        winston.warn('Failed to record download:', downloadError);
+        // Don't fail the download for this, just log it
+      }
 
       // Track download for achievements (only for authenticated users)
       if (req.user?.id) {
@@ -327,10 +357,17 @@ const downloadToybox = async (req, res) => {
       }
 
       // Update download count
-      await query(
-        'UPDATE toyboxes SET download_count = download_count + 1 WHERE id = $1',
-        [id]
-      );
+      const { error: updateError } = await supabase
+        .from('toyboxes')
+        .update({
+          download_count: (toybox.download_count || 0) + 1
+        })
+        .eq('id', id);
+
+      if (updateError) {
+        winston.warn('Failed to update download count:', updateError);
+        // Don't fail the download for this, just log it
+      }
 
       // Set headers
       res.setHeader('Content-Type', 'application/octet-stream');

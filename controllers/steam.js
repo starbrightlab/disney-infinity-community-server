@@ -1,4 +1,4 @@
-const { query } = require('../config/database');
+const { supabase } = require('../config/database');
 const { body, validationResult } = require('express-validator');
 const winston = require('winston');
 
@@ -38,12 +38,23 @@ const registerSteamId = async (req, res) => {
     const { steamId, steamUsername } = req.body;
 
     // Check if Steam ID is already registered to another user
-    const existingUser = await query(
-      'SELECT id FROM users WHERE id != $1 AND profile_data->>\'steam_id\' = $2',
-      [userId, steamId]
-    );
+    const { data: existingUser, error: existingError } = await supabase
+      .from('users')
+      .select('id')
+      .neq('id', userId)
+      .eq('profile_data->>steam_id', steamId);
 
-    if (existingUser.rows.length > 0) {
+    if (existingError) {
+      winston.error('Failed to check existing Steam ID:', existingError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to validate Steam ID'
+        }
+      });
+    }
+
+    if (existingUser && existingUser.length > 0) {
       return res.status(409).json({
         error: {
           code: 'CONFLICT',
@@ -59,10 +70,40 @@ const registerSteamId = async (req, res) => {
       steam_registered_at: new Date().toISOString()
     };
 
-    await query(
-      'UPDATE users SET profile_data = profile_data || $1 WHERE id = $2',
-      [JSON.stringify(steamData), userId]
-    );
+    // First get current profile data
+    const { data: currentUser, error: getError } = await supabase
+      .from('users')
+      .select('profile_data')
+      .eq('id', userId)
+      .single();
+
+    if (getError || !currentUser) {
+      winston.error('Failed to get user profile:', getError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to update Steam registration'
+        }
+      });
+    }
+
+    // Merge Steam data with existing profile
+    const updatedProfileData = { ...currentUser.profile_data, ...steamData };
+
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ profile_data: updatedProfileData })
+      .eq('id', userId);
+
+    if (updateError) {
+      winston.error('Failed to update Steam registration:', updateError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to register Steam ID'
+        }
+      });
+    }
 
     winston.info(`Steam ID registered for user ${userId}: ${steamId}`);
 
@@ -93,14 +134,21 @@ const getSteamLobby = async (req, res) => {
     const userId = req.user.id;
 
     // Verify user is in the session
-    const sessionCheck = await query(`
-      SELECT s.id, s.steam_lobby_id, s.game_mode, s.status
-      FROM game_sessions s
-      JOIN session_players sp ON s.id = sp.session_id
-      WHERE s.id = $1 AND sp.user_id = $2
-    `, [sessionId, userId]);
+    const { data: session, error: sessionError } = await supabase
+      .from('session_players')
+      .select(`
+        game_sessions!inner (
+          id,
+          steam_lobby_id,
+          game_mode,
+          status
+        )
+      `)
+      .eq('session_id', sessionId)
+      .eq('user_id', userId)
+      .single();
 
-    if (sessionCheck.rows.length === 0) {
+    if (sessionError || !session) {
       return res.status(403).json({
         error: {
           code: 'FORBIDDEN',
@@ -109,9 +157,7 @@ const getSteamLobby = async (req, res) => {
       });
     }
 
-    const session = sessionCheck.rows[0];
-
-    if (!session.steam_lobby_id) {
+    if (!session.game_sessions.steam_lobby_id) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -121,28 +167,39 @@ const getSteamLobby = async (req, res) => {
     }
 
     // Get Steam IDs for all players in the session
-    const playersResult = await query(`
-      SELECT
-        sp.user_id,
-        u.profile_data->>'steam_id' as steam_id,
-        u.username
-      FROM session_players sp
-      JOIN users u ON sp.user_id = u.id
-      WHERE sp.session_id = $1
-    `, [sessionId]);
+    const { data: playersData, error: playersError } = await supabase
+      .from('session_players')
+      .select(`
+        user_id,
+        users!session_players_user_id_fkey (
+          username,
+          profile_data
+        )
+      `)
+      .eq('session_id', sessionId);
 
-    const steamPlayers = playersResult.rows
-      .filter(player => player.steam_id)
+    if (playersError) {
+      winston.error('Failed to get Steam players:', playersError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get Steam lobby information'
+        }
+      });
+    }
+
+    const steamPlayers = playersData
+      .filter(player => player.users?.profile_data?.steam_id)
       .map(player => ({
         user_id: player.user_id,
-        steam_id: player.steam_id,
-        username: player.username
+        steam_id: player.users.profile_data.steam_id,
+        username: player.users.username
       }));
 
     res.json({
       session_id: sessionId,
-      steam_lobby_id: session.steam_lobby_id,
-      game_mode: session.game_mode,
+      steam_lobby_id: session.game_sessions.steam_lobby_id,
+      game_mode: session.game_sessions.game_mode,
       status: session.status,
       steam_players: steamPlayers,
       lobby_data: {
@@ -196,13 +253,13 @@ const createSteamLobby = async (req, res) => {
     const { lobbyType = 'public', maxMembers = 4 } = req.body;
 
     // Verify user is the host of the session
-    const sessionResult = await query(`
-      SELECT id, host_user_id, status, steam_lobby_id
-      FROM game_sessions
-      WHERE id = $1
-    `, [sessionId]);
+    const { data: session, error: sessionError } = await supabase
+      .from('game_sessions')
+      .select('id, host_user_id, status, steam_lobby_id')
+      .eq('id', sessionId)
+      .single();
 
-    if (sessionResult.rows.length === 0) {
+    if (sessionError || !session) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -211,7 +268,7 @@ const createSteamLobby = async (req, res) => {
       });
     }
 
-    const session = sessionResult.rows[0];
+    // Session already retrieved above
 
     if (session.host_user_id !== userId) {
       return res.status(403).json({
@@ -235,18 +292,28 @@ const createSteamLobby = async (req, res) => {
     const steamLobbyId = `steam_lobby_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     // Update session with Steam lobby information
-    await query(`
-      UPDATE game_sessions
-      SET steam_lobby_id = $1, session_data = session_data || $2
-      WHERE id = $3
-    `, [
-      steamLobbyId,
-      JSON.stringify({
-        steamLobbyType: lobbyType,
-        steamMaxMembers: maxMembers
-      }),
-      sessionId
-    ]);
+    const steamLobbyData = {
+      steamLobbyType: lobbyType,
+      steamMaxMembers: maxMembers
+    };
+
+    const { error: updateError } = await supabase
+      .from('game_sessions')
+      .update({
+        steam_lobby_id: steamLobbyId,
+        session_data: steamLobbyData
+      })
+      .eq('id', sessionId);
+
+    if (updateError) {
+      winston.error('Failed to update session with Steam lobby:', updateError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to create Steam lobby'
+        }
+      });
+    }
 
     winston.info(`Steam lobby created for session ${sessionId}: ${steamLobbyId}`);
 
@@ -309,13 +376,14 @@ const updateSteamLobby = async (req, res) => {
     const { metadata } = req.body;
 
     // Verify user is the host of the session
-    const sessionResult = await query(`
-      SELECT id, host_user_id, steam_lobby_id
-      FROM game_sessions
-      WHERE id = $1 AND host_user_id = $2
-    `, [sessionId, userId]);
+    const { data: session, error: sessionError } = await supabase
+      .from('game_sessions')
+      .select('id, host_user_id, steam_lobby_id')
+      .eq('id', sessionId)
+      .eq('host_user_id', userId)
+      .single();
 
-    if (sessionResult.rows.length === 0) {
+    if (sessionError || !session) {
       return res.status(403).json({
         error: {
           code: 'FORBIDDEN',
@@ -336,11 +404,22 @@ const updateSteamLobby = async (req, res) => {
     }
 
     // Update session data with Steam metadata
-    await query(`
-      UPDATE game_sessions
-      SET session_data = session_data || $1
-      WHERE id = $2
-    `, [JSON.stringify({ steamMetadata: metadata }), sessionId]);
+    const { error: updateError } = await supabase
+      .from('game_sessions')
+      .update({
+        session_data: { steamMetadata: metadata }
+      })
+      .eq('id', sessionId);
+
+    if (updateError) {
+      winston.error('Failed to update Steam metadata:', updateError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to update Steam lobby metadata'
+        }
+      });
+    }
 
     winston.debug(`Steam lobby metadata updated for session ${sessionId}`);
 
@@ -370,12 +449,13 @@ const getSteamFriends = async (req, res) => {
     const userId = req.user.id;
 
     // Get user's Steam ID
-    const userResult = await query(
-      'SELECT profile_data FROM users WHERE id = $1',
-      [userId]
-    );
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('profile_data')
+      .eq('id', userId)
+      .single();
 
-    if (userResult.rows.length === 0) {
+    if (userError || !user) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -400,22 +480,44 @@ const getSteamFriends = async (req, res) => {
     // this would query Steam API for friends list and match against our users)
     // For now, return users who have Steam IDs and are in the same sessions
 
-    const friendsResult = await query(`
-      SELECT DISTINCT
-        u.id,
-        u.username,
-        u.profile_data->>'steam_id' as steam_id,
-        u.profile_data->>'steam_username' as steam_username,
-        CASE WHEN f.id IS NOT NULL THEN true ELSE false END as is_friend
-      FROM users u
-      LEFT JOIN friends f ON (
-        (f.user_id = $1 AND f.friend_id = u.id) OR
-        (f.friend_id = $1 AND f.user_id = u.id)
-      ) AND f.friendship_status = 'active'
-      WHERE u.id != $1
-        AND u.profile_data->>'steam_id' IS NOT NULL
-      ORDER BY u.username
-    `, [userId]);
+    // Get users with Steam IDs (simplified - would need proper friends join in real implementation)
+    const { data: steamUsers, error: steamError } = await supabase
+      .from('users')
+      .select('id, username, profile_data')
+      .neq('id', userId)
+      .not('profile_data->>steam_id', 'is', null)
+      .order('username');
+
+    if (steamError) {
+      winston.error('Failed to get Steam friends:', steamError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get Steam friends'
+        }
+      });
+    }
+
+    // Get actual friends list to mark which Steam users are friends
+    const { data: friends, error: friendsError } = await supabase
+      .from('friends')
+      .select('user_id, friend_id')
+      .or(`user_id.eq.${userId},friend_id.eq.${userId}`)
+      .eq('friendship_status', 'active');
+
+    const friendIds = new Set();
+    friends?.forEach(friend => {
+      if (friend.user_id === userId) friendIds.add(friend.friend_id);
+      else if (friend.friend_id === userId) friendIds.add(friend.user_id);
+    });
+
+    const friendsResult = steamUsers.map(user => ({
+      id: user.id,
+      username: user.username,
+      steam_id: user.profile_data?.steam_id,
+      steam_username: user.profile_data?.steam_username,
+      is_friend: friendIds.has(user.id)
+    }));
 
     const steamFriends = friendsResult.rows.map(friend => ({
       user_id: friend.id,
@@ -486,11 +588,23 @@ const reportSteamOverlay = async (req, res) => {
     };
 
     // Update user's Steam status
-    await query(`
-      UPDATE users
-      SET profile_data = profile_data || $1
-      WHERE id = $2
-    `, [JSON.stringify({ steam_overlay: overlayData }), userId]);
+    const { data: currentUser, error: getError } = await supabase
+      .from('users')
+      .select('profile_data')
+      .eq('id', userId)
+      .single();
+
+    if (!getError && currentUser) {
+      const updatedProfile = { ...currentUser.profile_data, steam_overlay: overlayData };
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({ profile_data: updatedProfile })
+        .eq('id', userId);
+
+      if (updateError) {
+        winston.warn('Failed to update Steam overlay status:', updateError);
+      }
+    }
 
     winston.debug(`Steam overlay status reported for user ${userId}: active=${overlayActive}`);
 
@@ -522,17 +636,19 @@ const getSteamAchievements = async (req, res) => {
 
     // Get user's achievement progress from database
     // This is a placeholder - in real implementation would sync with Steam
-    const achievementsResult = await query(`
-      SELECT
-        achievement_id,
-        achievement_name,
-        unlocked,
-        unlocked_at,
-        progress
-      FROM user_achievements
-      WHERE user_id = $1
-      ORDER BY unlocked_at DESC NULLS LAST
-    `, [userId]);
+    const { data: achievements, error: achievementsError } = await supabase
+      .from('user_achievements')
+      .select('achievement_id, achievement_name, unlocked, unlocked_at, progress')
+      .eq('user_id', userId)
+      .order('unlocked_at', { ascending: false, nullsFirst: false });
+
+    if (achievementsError) {
+      winston.error('Failed to get Steam achievements:', achievementsError);
+      // Return empty array if table doesn't exist yet
+      var achievementsResult = [];
+    } else {
+      var achievementsResult = achievements || [];
+    }
 
     // For now, return mock achievements
     const mockAchievements = [

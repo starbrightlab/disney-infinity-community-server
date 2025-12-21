@@ -1,4 +1,4 @@
-const { query } = require('../config/database');
+const { supabase } = require('../config/database');
 const { body, validationResult } = require('express-validator');
 const winston = require('winston');
 const { updatePresenceStatus, sendNotificationToUser } = require('../socket');
@@ -82,49 +82,80 @@ const getFriendPresence = async (req, res) => {
     const userId = req.user.id;
     const { includeOffline = true } = req.query;
 
-    // Get user's friends with their presence
-    const friendsResult = await query(`
-      SELECT
-        CASE
-          WHEN f.user_id = $1 THEN f.friend_id
-          ELSE f.user_id
-        END as friend_id,
-        u.username,
-        COALESCE(p.status, 'offline') as status,
-        p.last_seen,
-        p.current_game_mode,
-        p.current_session_id,
-        p.steam_status
-      FROM friends f
-      JOIN users u ON (
-        CASE
-          WHEN f.user_id = $1 THEN f.friend_id = u.id
-          ELSE f.user_id = u.id
-        END
-      )
-      LEFT JOIN player_presence p ON p.user_id = u.id
-      WHERE (f.user_id = $1 OR f.friend_id = $1)
-        AND f.friendship_status = 'active'
-        AND ($2 OR COALESCE(p.status, 'offline') != 'offline')
-      ORDER BY
-        CASE
-          WHEN COALESCE(p.status, 'offline') = 'online' THEN 1
-          WHEN COALESCE(p.status, 'offline') = 'in_game' THEN 2
-          WHEN COALESCE(p.status, 'offline') = 'away' THEN 3
-          ELSE 4
-        END,
-        u.username
-    `, [userId, includeOffline]);
+    // Get user's friends
+    const { data: friendRelationships, error: friendsError } = await supabase
+      .from('friends')
+      .select('user_id, friend_id')
+      .or(`user_id.eq.${userId},friend_id.eq.${userId}`)
+      .eq('friendship_status', 'active');
 
-    const friends = friendsResult.rows.map(row => ({
-      user_id: row.friend_id,
-      username: row.username,
-      status: row.status,
-      last_seen: row.last_seen,
-      current_game_mode: row.current_game_mode,
-      current_session_id: row.current_session_id,
-      steam_status: row.steam_status
-    }));
+    if (friendsError) {
+      winston.error('Failed to get friend relationships:', friendsError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get friends'
+        }
+      });
+    }
+
+    const friendIds = friendRelationships.map(rel =>
+      rel.user_id === userId ? rel.friend_id : rel.user_id
+    );
+
+    if (friendIds.length === 0) {
+      return res.json({
+        friends: [],
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Get friends with presence information
+    const { data: friendsData, error: presenceError } = await supabase
+      .from('users')
+      .select(`
+        id,
+        username,
+        player_presence (
+          status,
+          last_seen,
+          current_game_mode,
+          current_session_id,
+          steam_status
+        )
+      `)
+      .in('id', friendIds);
+
+    if (presenceError) {
+      winston.error('Failed to get friend presence:', presenceError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get friend presence'
+        }
+      });
+    }
+
+    const friends = friendsData
+      .map(friend => ({
+        user_id: friend.id,
+        username: friend.username,
+        status: friend.player_presence?.[0]?.status || 'offline',
+        last_seen: friend.player_presence?.[0]?.last_seen,
+        current_game_mode: friend.player_presence?.[0]?.current_game_mode,
+        current_session_id: friend.player_presence?.[0]?.current_session_id,
+        steam_status: friend.player_presence?.[0]?.steam_status
+      }))
+      .filter(friend => includeOffline || friend.status !== 'offline')
+      .sort((a, b) => {
+        // Sort by status priority, then username
+        const statusOrder = { online: 1, in_game: 2, away: 3, offline: 4 };
+        const aOrder = statusOrder[a.status] || 4;
+        const bOrder = statusOrder[b.status] || 4;
+
+        if (aOrder !== bOrder) return aOrder - bOrder;
+        return a.username.localeCompare(b.username);
+      });
 
     res.json({
       friends,
@@ -151,41 +182,71 @@ const getOnlineFriends = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Get only online/in-game friends
-    const friendsResult = await query(`
-      SELECT
-        CASE
-          WHEN f.user_id = $1 THEN f.friend_id
-          ELSE f.user_id
-        END as friend_id,
-        u.username,
-        p.status,
-        p.last_seen,
-        p.current_game_mode,
-        p.current_session_id,
-        p.steam_status
-      FROM friends f
-      JOIN users u ON (
-        CASE
-          WHEN f.user_id = $1 THEN f.friend_id = u.id
-          ELSE f.user_id = u.id
-        END
-      )
-      JOIN player_presence p ON p.user_id = u.id
-      WHERE (f.user_id = $1 OR f.friend_id = $1)
-        AND f.friendship_status = 'active'
-        AND p.status IN ('online', 'in_game')
-      ORDER BY u.username
-    `, [userId]);
+    // Get user's friends
+    const { data: friendRelationships, error: friendsError } = await supabase
+      .from('friends')
+      .select('user_id, friend_id')
+      .or(`user_id.eq.${userId},friend_id.eq.${userId}`)
+      .eq('friendship_status', 'active');
 
-    const onlineFriends = friendsResult.rows.map(row => ({
-      user_id: row.friend_id,
-      username: row.username,
-      status: row.status,
-      last_seen: row.last_seen,
-      current_game_mode: row.current_game_mode,
-      current_session_id: row.current_session_id,
-      steam_status: row.steam_status
+    if (friendsError) {
+      winston.error('Failed to get friend relationships:', friendsError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get online friends'
+        }
+      });
+    }
+
+    const friendIds = friendRelationships.map(rel =>
+      rel.user_id === userId ? rel.friend_id : rel.user_id
+    );
+
+    if (friendIds.length === 0) {
+      return res.json({
+        online_friends: [],
+        count: 0,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Get online friends only
+    const { data: onlineFriendsData, error: onlineError } = await supabase
+      .from('users')
+      .select(`
+        id,
+        username,
+        player_presence!inner (
+          status,
+          last_seen,
+          current_game_mode,
+          current_session_id,
+          steam_status
+        )
+      `)
+      .in('id', friendIds)
+      .in('player_presence.status', ['online', 'in_game'])
+      .order('username');
+
+    if (onlineError) {
+      winston.error('Failed to get online friends:', onlineError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get online friends'
+        }
+      });
+    }
+
+    const onlineFriends = onlineFriendsData.map(friend => ({
+      user_id: friend.id,
+      username: friend.username,
+      status: friend.player_presence[0].status,
+      last_seen: friend.player_presence[0].last_seen,
+      current_game_mode: friend.player_presence[0].current_game_mode,
+      current_session_id: friend.player_presence[0].current_session_id,
+      steam_status: friend.player_presence[0].steam_status
     }));
 
     res.json({
@@ -212,18 +273,13 @@ const getMyPresence = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const presenceResult = await query(`
-      SELECT
-        status,
-        last_seen,
-        current_game_mode,
-        current_session_id,
-        steam_status
-      FROM player_presence
-      WHERE user_id = $1
-    `, [userId]);
+    const { data: presence, error: presenceError } = await supabase
+      .from('player_presence')
+      .select('status, last_seen, current_game_mode, current_session_id, steam_status')
+      .eq('user_id', userId)
+      .single();
 
-    if (presenceResult.rows.length === 0) {
+    if (presenceError || !presence) {
       return res.json({
         status: 'offline',
         last_seen: null,
@@ -232,8 +288,6 @@ const getMyPresence = async (req, res) => {
         steam_status: {}
       });
     }
-
-    const presence = presenceResult.rows[0];
 
     res.json({
       status: presence.status,
@@ -271,50 +325,71 @@ const bulkPresenceQuery = async (req, res) => {
       });
     }
 
-    // Check if all requested users are friends (privacy control)
-    const friendsCheck = await query(`
-      SELECT DISTINCT
-        CASE
-          WHEN f.user_id = $1 THEN f.friend_id
-          ELSE f.user_id
-        END as friend_id
-      FROM friends f
-      WHERE (f.user_id = $1 OR f.friend_id = $1)
-        AND f.friendship_status = 'active'
-        AND (
-          CASE
-            WHEN f.user_id = $1 THEN f.friend_id
-            ELSE f.user_id
-          END = ANY($2)
-        )
-    `, [userId, userIds]);
+    // Check if requested users are friends (privacy control)
+    const { data: friendRelationships, error: friendsError } = await supabase
+      .from('friends')
+      .select('user_id, friend_id')
+      .or(`user_id.eq.${userId},friend_id.eq.${userId}`)
+      .eq('friendship_status', 'active');
 
-    const friendIds = friendsCheck.rows.map(row => row.friend_id);
+    if (friendsError) {
+      winston.error('Failed to check friend relationships:', friendsError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to check friend relationships'
+        }
+      });
+    }
+
+    // Filter requested userIds to only friends
+    const friendIds = friendRelationships
+      .map(rel => rel.user_id === userId ? rel.friend_id : rel.user_id)
+      .filter(friendId => userIds.includes(friendId));
+
+    if (friendIds.length === 0) {
+      return res.json({
+        users: [],
+        requested_count: userIds.length,
+        accessible_count: 0,
+        timestamp: new Date().toISOString()
+      });
+    }
 
     // Get presence for friends only
-    const presenceResult = await query(`
-      SELECT
-        p.user_id,
-        u.username,
-        COALESCE(p.status, 'offline') as status,
-        p.last_seen,
-        p.current_game_mode,
-        p.current_session_id
-      FROM unnest($1::uuid[]) as requested_user(user_id)
-      LEFT JOIN player_presence p ON p.user_id = requested_user.user_id
-      LEFT JOIN users u ON u.id = requested_user.user_id
-      WHERE requested_user.user_id = ANY($2)
-    `, [userIds, friendIds]);
+    const { data: presenceData, error: presenceError } = await supabase
+      .from('users')
+      .select(`
+        id,
+        username,
+        player_presence (
+          status,
+          last_seen,
+          current_game_mode,
+          current_session_id
+        )
+      `)
+      .in('id', friendIds);
+
+    if (presenceError) {
+      winston.error('Failed to get bulk presence:', presenceError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get presence data'
+        }
+      });
+    }
 
     const presenceMap = {};
-    presenceResult.rows.forEach(row => {
-      presenceMap[row.user_id] = {
-        user_id: row.user_id,
-        username: row.username,
-        status: row.status,
-        last_seen: row.last_seen,
-        current_game_mode: row.current_game_mode,
-        current_session_id: row.current_session_id
+    presenceData.forEach(user => {
+      presenceMap[user.id] = {
+        user_id: user.id,
+        username: user.username,
+        status: user.player_presence?.[0]?.status || 'offline',
+        last_seen: user.player_presence?.[0]?.last_seen,
+        current_game_mode: user.player_presence?.[0]?.current_game_mode,
+        current_session_id: user.player_presence?.[0]?.current_session_id
       };
     });
 
@@ -341,19 +416,57 @@ const bulkPresenceQuery = async (req, res) => {
  */
 const cleanupStalePresence = async (req, res) => {
   try {
+    // Get active session IDs first
+    const { data: activeSessions, error: sessionError } = await supabase
+      .from('game_sessions')
+      .select('id')
+      .in('status', ['waiting', 'active']);
+
+    if (sessionError) {
+      winston.error('Failed to get active sessions for cleanup:', sessionError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get active sessions'
+        }
+      });
+    }
+
+    const activeSessionIds = activeSessions.map(session => session.id);
+
     // Mark users as offline if they haven't been seen in 10 minutes
     // and aren't in an active session
-    const result = await query(`
-      UPDATE player_presence
-      SET status = 'offline', last_seen = NOW()
-      WHERE status IN ('online', 'away', 'in_game', 'in_menu')
-        AND last_seen < NOW() - INTERVAL '10 minutes'
-        AND (current_session_id IS NULL OR current_session_id NOT IN (
-          SELECT id FROM game_sessions WHERE status IN ('waiting', 'active')
-        ))
-    `);
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
 
-    const updatedCount = result.rowCount;
+    let updateQuery = supabase
+      .from('player_presence')
+      .update({
+        status: 'offline',
+        last_seen: new Date().toISOString()
+      })
+      .in('status', ['online', 'away', 'in_game', 'in_menu'])
+      .lt('last_seen', tenMinutesAgo);
+
+    // Add condition for active sessions
+    if (activeSessionIds.length > 0) {
+      updateQuery = updateQuery.or(`current_session_id.is.null,current_session_id.not.in.(${activeSessionIds.join(',')})`);
+    } else {
+      updateQuery = updateQuery.is('current_session_id', null);
+    }
+
+    const { data: updatedRecords, error: updateError } = await updateQuery.select('id');
+
+    if (updateError) {
+      winston.error('Failed to cleanup stale presence:', updateError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to cleanup stale presence'
+        }
+      });
+    }
+
+    const updatedCount = updatedRecords ? updatedRecords.length : 0;
 
     winston.info(`Cleaned up ${updatedCount} stale presence records`);
 

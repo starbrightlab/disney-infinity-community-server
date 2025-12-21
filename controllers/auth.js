@@ -157,10 +157,17 @@ const loginValidation = [
  * User login
  */
 const login = async (req, res) => {
+  console.log('🔐 LOGIN ATTEMPT:', {
+    username: req.body.username,
+    hasPassword: !!req.body.password,
+    timestamp: new Date().toISOString()
+  });
+
   try {
     // Check validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('❌ LOGIN VALIDATION FAILED:', errors.array());
       return res.status(400).json({
         error: {
           code: 'INVALID_REQUEST',
@@ -171,15 +178,30 @@ const login = async (req, res) => {
     }
 
     const { username, password } = req.body;
+    console.log('📝 LOGIN PARAMS:', { username, passwordLength: password.length });
 
     // Find user
+    console.log('🔍 QUERYING DATABASE for user:', username);
     const { data: user, error: userError } = await supabase
       .from('users')
       .select('id, username, email, password_hash, is_active')
       .or(`username.eq.${username},email.eq.${username}`)
       .single();
 
+    console.log('📊 DATABASE RESULT:', {
+      hasData: !!user,
+      hasError: !!userError,
+      userFound: user ? {
+        id: user.id,
+        username: user.username,
+        is_active: user.is_active,
+        hasPasswordHash: !!user.password_hash
+      } : null,
+      errorMessage: userError?.message
+    });
+
     if (userError || !user) {
+      console.log('❌ USER NOT FOUND:', username);
       return res.status(401).json({
         error: {
           code: 'UNAUTHORIZED',
@@ -189,6 +211,7 @@ const login = async (req, res) => {
     }
 
     if (!user.is_active) {
+      console.log('🚫 USER INACTIVE:', user.id);
       return res.status(401).json({
         error: {
           code: 'UNAUTHORIZED',
@@ -198,8 +221,16 @@ const login = async (req, res) => {
     }
 
     // Verify password
+    console.log('🔑 VERIFYING PASSWORD for user:', user.id);
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
+    console.log('🔐 PASSWORD VERIFICATION:', {
+      isValid: isValidPassword,
+      hashLength: user.password_hash.length,
+      providedPasswordLength: password.length
+    });
+
     if (!isValidPassword) {
+      console.log('❌ INVALID PASSWORD for user:', user.id);
       return res.status(401).json({
         error: {
           code: 'UNAUTHORIZED',
@@ -209,16 +240,25 @@ const login = async (req, res) => {
     }
 
     // Update last login
-    await query(
-      'UPDATE users SET last_login = NOW() WHERE id = $1',
-      [user.id]
-    );
+    console.log('📅 UPDATING LAST LOGIN for user:', user.id);
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ last_login: new Date().toISOString() })
+      .eq('id', user.id);
+
+    if (updateError) {
+      console.log('⚠️ LAST LOGIN UPDATE FAILED (non-critical):', updateError.message);
+      // Don't fail login for this, just log it
+    } else {
+      console.log('✅ LAST LOGIN UPDATED for user:', user.id);
+    }
 
     // Generate tokens
+    console.log('🎫 GENERATING TOKENS for user:', user.id);
     const accessToken = generateAccessToken(user.id);
     const refreshToken = generateRefreshToken(user.id);
 
-    winston.info(`User logged in: ${username} (${user.id})`);
+    console.log('✅ LOGIN SUCCESSFUL for user:', username);
 
     res.json({
       user: {
@@ -232,7 +272,13 @@ const login = async (req, res) => {
     });
 
   } catch (err) {
-    winston.error('Login error:', err);
+    console.error('💥 LOGIN ERROR:', {
+      message: err.message,
+      stack: err.stack,
+      code: err.code,
+      detail: err.detail,
+      hint: err.hint
+    });
     res.status(500).json({
       error: {
         code: 'SERVER_ERROR',
@@ -275,12 +321,13 @@ const refresh = async (req, res) => {
     }
 
     // Check if user still exists and is active
-    const result = await query(
-      'SELECT id, username, email, is_active FROM users WHERE id = $1',
-      [decoded.userId]
-    );
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, username, email, is_active')
+      .eq('id', decoded.userId)
+      .single();
 
-    if (result.rows.length === 0 || !result.rows[0].is_active) {
+    if (userError || !user || !user.is_active) {
       return res.status(401).json({
         error: {
           code: 'UNAUTHORIZED',
@@ -288,8 +335,6 @@ const refresh = async (req, res) => {
         }
       });
     }
-
-    const user = result.rows[0];
 
     // Generate new tokens
     const accessToken = generateAccessToken(user.id);

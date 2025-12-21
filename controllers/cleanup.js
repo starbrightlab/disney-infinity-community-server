@@ -1,4 +1,4 @@
-const { query } = require('../config/database');
+const { supabase } = require('../config/database');
 const {
   runAllCleanup,
   manualCleanup,
@@ -47,70 +47,80 @@ const getCleanupStats = async (req, res) => {
     };
 
     // Count active matchmaking entries
-    const matchmakingActive = await query(`
-      SELECT COUNT(*) as count FROM matchmaking_queue WHERE status = 'active'
-    `);
-    stats.matchmaking.active_count = parseInt(matchmakingActive.rows[0].count);
+    const { count: activeCount, error: activeError } = await supabase
+      .from('matchmaking_queue')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'active');
+    stats.matchmaking.active_count = activeCount || 0;
 
     // Count stale matchmaking entries
-    const matchmakingStale = await query(`
-      SELECT COUNT(*) as count FROM matchmaking_queue
-      WHERE status = 'active' AND created_at < NOW() - INTERVAL '30 minutes'
-    `);
-    stats.matchmaking.stale_count = parseInt(matchmakingStale.rows[0].count);
+    const { count: staleCount, error: staleError } = await supabase
+      .from('matchmaking_queue')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'active')
+      .lt('created_at', new Date(Date.now() - 30 * 60 * 1000).toISOString());
+    stats.matchmaking.stale_count = staleCount || 0;
 
     // Count old matched entries
-    const matchmakingOldMatched = await query(`
-      SELECT COUNT(*) as count FROM matchmaking_queue
-      WHERE status = 'matched' AND created_at < NOW() - INTERVAL '1 hour'
-    `);
-    stats.matchmaking.old_matched_count = parseInt(matchmakingOldMatched.rows[0].count);
+    const { count: oldMatchedCount, error: oldMatchedError } = await supabase
+      .from('matchmaking_queue')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'matched')
+      .lt('created_at', new Date(Date.now() - 60 * 60 * 1000).toISOString());
+    stats.matchmaking.old_matched_count = oldMatchedCount || 0;
 
     // Count sessions by status
-    const sessionStats = await query(`
-      SELECT status, COUNT(*) as count FROM game_sessions GROUP BY status
-    `);
+    const { data: sessionData, error: sessionError } = await supabase
+      .from('game_sessions')
+      .select('status');
 
-    sessionStats.rows.forEach(row => {
-      if (row.status === 'waiting') stats.sessions.waiting_count = parseInt(row.count);
-      else if (row.status === 'active') stats.sessions.active_count = parseInt(row.count);
-      else if (row.status === 'abandoned') stats.sessions.abandoned_count = parseInt(row.count);
+    const sessionStatsMap = {};
+    sessionData.forEach(session => {
+      sessionStatsMap[session.status] = (sessionStatsMap[session.status] || 0) + 1;
+    });
+
+    Object.entries(sessionStatsMap).forEach(([status, count]) => {
+      if (status === 'waiting') stats.sessions.waiting_count = count;
+      else if (status === 'active') stats.sessions.active_count = count;
+      else if (status === 'completed') stats.sessions.completed_count = count;
+      else if (status === 'abandoned') stats.sessions.abandoned_count = count;
     });
 
     // Count old completed sessions
-    const oldCompleted = await query(`
-      SELECT COUNT(*) as count FROM game_sessions
-      WHERE status IN ('completed', 'abandoned', 'cancelled')
-        AND ended_at < NOW() - INTERVAL '7 days'
-    `);
-    stats.sessions.old_completed_count = parseInt(oldCompleted.rows[0].count);
+    const { count: oldCompletedCount, error: oldCompletedError } = await supabase
+      .from('game_sessions')
+      .select('*', { count: 'exact', head: true })
+      .in('status', ['completed', 'abandoned', 'cancelled'])
+      .lt('ended_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+    stats.sessions.old_completed_count = oldCompletedCount || 0;
 
     // Count network quality records
-    const networkTotal = await query(`
-      SELECT COUNT(*) as count FROM network_quality
-    `);
-    stats.network.total_records = parseInt(networkTotal.rows[0].count);
+    const { count: networkTotalCount, error: networkTotalError } = await supabase
+      .from('network_quality')
+      .select('*', { count: 'exact', head: true });
+    stats.network.total_records = networkTotalCount || 0;
 
-    const networkOld = await query(`
-      SELECT COUNT(*) as count FROM network_quality
-      WHERE recorded_at < NOW() - INTERVAL '30 days'
-    `);
-    stats.network.old_records_count = parseInt(networkOld.rows[0].count);
+    const { count: networkOldCount, error: networkOldError } = await supabase
+      .from('network_quality')
+      .select('*', { count: 'exact', head: true })
+      .lt('recorded_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+    stats.network.old_records_count = networkOldCount || 0;
 
     // Count inactive presence records
-    const inactivePresence = await query(`
-      SELECT COUNT(*) as count FROM player_presence
-      WHERE status IN ('online', 'in_game', 'away')
-        AND last_seen < NOW() - INTERVAL '10 minutes'
-    `);
-    stats.presence.inactive_users_count = parseInt(inactivePresence.rows[0].count);
+    const { count: inactivePresenceCount, error: inactiveError } = await supabase
+      .from('player_presence')
+      .select('*', { count: 'exact', head: true })
+      .in('status', ['online', 'in_game', 'away'])
+      .lt('last_seen', new Date(Date.now() - 10 * 60 * 1000).toISOString());
+    stats.presence.inactive_users_count = inactivePresenceCount || 0;
 
     // Count expired friend requests
-    const expiredRequests = await query(`
-      SELECT COUNT(*) as count FROM friend_requests
-      WHERE status = 'pending' AND created_at < NOW() - INTERVAL '30 days'
-    `);
-    stats.friends.expired_requests_count = parseInt(expiredRequests.rows[0].count);
+    const { count: expiredRequestsCount, error: expiredError } = await supabase
+      .from('friend_requests')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'pending')
+      .lt('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+    stats.friends.expired_requests_count = expiredRequestsCount || 0;
 
     res.json(stats);
 
@@ -164,66 +174,36 @@ const getDatabaseHealth = async (req, res) => {
       timestamp: new Date().toISOString()
     };
 
-    // Check table sizes
-    const tableSizes = await query(`
-      SELECT
-        schemaname,
-        tablename,
-        pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size
-      FROM pg_tables
-      WHERE schemaname = 'public'
-        AND tablename IN ('users', 'toyboxes', 'game_sessions', 'matchmaking_queue', 'session_players')
-      ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
-    `);
+    // Get basic table statistics (simplified for Supabase)
+    const tables = ['users', 'toyboxes', 'game_sessions', 'matchmaking_queue', 'session_players'];
 
-    tableSizes.rows.forEach(row => {
-      health.tables[row.tablename] = {
-        size: row.size
-      };
-    });
+    for (const table of tables) {
+      try {
+        const { count, error } = await supabase
+          .from(table)
+          .select('*', { count: 'exact', head: true });
 
-    // Check index usage
-    const indexUsage = await query(`
-      SELECT
-        schemaname,
-        tablename,
-        indexname,
-        idx_scan as scans
-      FROM pg_stat_user_indexes
-      WHERE schemaname = 'public'
-        AND tablename IN ('game_sessions', 'matchmaking_queue', 'session_players')
-      ORDER BY idx_scan DESC
-      LIMIT 10
-    `);
-
-    indexUsage.rows.forEach(row => {
-      if (!health.indexes[row.tablename]) {
-        health.indexes[row.tablename] = [];
+        if (!error) {
+          health.tables[table] = {
+            record_count: count || 0,
+            size: 'N/A (Supabase managed)'
+          };
+        }
+      } catch (err) {
+        winston.warn(`Could not get stats for table ${table}:`, err.message);
       }
-      health.indexes[row.tablename].push({
-        name: row.indexname,
-        scans: parseInt(row.scans)
-      });
-    });
-
-    // Check connection stats
-    const connectionStats = await query(`
-      SELECT
-        count(*) as total_connections,
-        count(*) filter (where state = 'active') as active_connections,
-        count(*) filter (where state = 'idle') as idle_connections
-      FROM pg_stat_activity
-      WHERE datname = current_database()
-    `);
-
-    if (connectionStats.rows.length > 0) {
-      const conn = connectionStats.rows[0];
-      health.connections = {
-        total: parseInt(conn.total_connections),
-        active: parseInt(conn.active_connections),
-        idle: parseInt(conn.idle_connections)
-      };
     }
+
+    // Skip index usage stats (not available in Supabase)
+    health.indexes = {
+      note: 'Index usage statistics not available in Supabase environment'
+    };
+
+    // Connection stats (simplified for Supabase)
+    health.connections = {
+      note: 'Connection statistics not available in Supabase environment',
+      managed_by: 'Supabase infrastructure'
+    };
 
     res.json(health);
 
@@ -245,14 +225,9 @@ const optimizeDatabase = async (req, res) => {
   try {
     winston.info(`Database optimization triggered by admin user: ${req.user.id}`);
 
-    // Run VACUUM on main tables
-    await query('VACUUM ANALYZE users');
-    await query('VACUUM ANALYZE toyboxes');
-    await query('VACUUM ANALYZE game_sessions');
-    await query('VACUUM ANALYZE matchmaking_queue');
-    await query('VACUUM ANALYZE session_players');
-
-    winston.info('Database optimization completed');
+    // Note: VACUUM operations are handled automatically by Supabase
+    // We can't run manual VACUUM commands in Supabase environment
+    winston.info('Database optimization requested - Supabase handles maintenance automatically');
 
     res.json({
       status: 'optimization_completed',

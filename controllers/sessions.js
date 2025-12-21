@@ -1,4 +1,4 @@
-const { query, transaction } = require('../config/database');
+const { supabase } = require('../config/database');
 const { body, validationResult } = require('express-validator');
 const winston = require('winston');
 
@@ -72,52 +72,88 @@ const createSession = async (req, res) => {
     } = req.body;
 
     // Check if user is already in an active session
-    const existingSession = await query(`
-      SELECT s.id, sp.player_status
-      FROM game_sessions s
-      JOIN session_players sp ON s.id = sp.session_id
-      WHERE sp.user_id = $1 AND s.status IN ('waiting', 'active')
-      ORDER BY s.created_at DESC LIMIT 1
-    `, [hostUserId]);
+    const { data: existingSession, error: sessionError } = await supabase
+      .from('session_players')
+      .select(`
+        game_sessions!inner (
+          id,
+          status
+        )
+      `)
+      .eq('user_id', hostUserId)
+      .in('game_sessions.status', ['waiting', 'active'])
+      .order('game_sessions.created_at', { ascending: false })
+      .limit(1);
 
-    if (existingSession.rows.length > 0) {
+    if (sessionError) {
+      winston.error('Failed to check existing sessions:', sessionError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to check existing sessions'
+        }
+      });
+    }
+
+    if (existingSession && existingSession.length > 0) {
       return res.status(409).json({
         error: {
           code: 'CONFLICT',
           message: 'User is already in an active session',
-          session_id: existingSession.rows[0].id
+          session_id: existingSession[0].game_sessions.id
         }
       });
     }
 
     // Create the session
-    const sessionResult = await query(`
-      INSERT INTO game_sessions (
-        host_user_id, game_mode, region, max_players, current_players,
-        player_ids, status, session_data
-      ) VALUES ($1, $2, $3, $4, 1, $5, 'waiting', $6)
-      RETURNING id, created_at
-    `, [
-      hostUserId,
-      gameMode,
-      region,
-      maxPlayers,
-      [hostUserId],
-      JSON.stringify({
-        ...sessionData,
-        isPrivate,
-        password: isPrivate && password ? password : null
-      })
-    ]);
+    const { data: session, error: insertError } = await supabase
+      .from('game_sessions')
+      .insert([{
+        host_user_id: hostUserId,
+        game_mode: gameMode,
+        region: region,
+        max_players: maxPlayers,
+        current_players: 1,
+        player_ids: [hostUserId],
+        status: 'waiting',
+        session_data: {
+          ...sessionData,
+          isPrivate,
+          password: isPrivate && password ? password : null
+        }
+      }])
+      .select('id, created_at')
+      .single();
 
-    const session = sessionResult.rows[0];
+    if (insertError) {
+      winston.error('Failed to create session:', insertError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to create session'
+        }
+      });
+    }
 
     // Add host as first player
-    await query(`
-      INSERT INTO session_players (
-        session_id, user_id, player_status, joined_at
-      ) VALUES ($1, $2, 'ready', NOW())
-    `, [session.id, hostUserId]);
+    const { error: playerError } = await supabase
+      .from('session_players')
+      .insert([{
+        session_id: session.id,
+        user_id: hostUserId,
+        player_status: 'ready',
+        joined_at: new Date().toISOString()
+      }]);
+
+    if (playerError) {
+      winston.error('Failed to add host as player:', playerError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to add host to session'
+        }
+      });
+    }
 
     winston.info(`Session created: ${session.id} by user ${hostUserId} for ${gameMode}`);
 
@@ -164,14 +200,13 @@ const joinSession = async (req, res) => {
     const { sessionId, password } = req.body;
 
     // Get session details
-    const sessionResult = await query(`
-      SELECT id, host_user_id, game_mode, region, max_players, current_players,
-             player_ids, status, session_data
-      FROM game_sessions
-      WHERE id = $1
-    `, [sessionId]);
+    const { data: session, error: sessionError } = await supabase
+      .from('game_sessions')
+      .select('id, host_user_id, game_mode, region, max_players, current_players, player_ids, status, session_data')
+      .eq('id', sessionId)
+      .single();
 
-    if (sessionResult.rows.length === 0) {
+    if (sessionError || !session) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -179,8 +214,6 @@ const joinSession = async (req, res) => {
         }
       });
     }
-
-    const session = sessionResult.rows[0];
 
     // Check if session is joinable
     if (!['waiting', 'active'].includes(session.status)) {
@@ -213,19 +246,33 @@ const joinSession = async (req, res) => {
     }
 
     // Check if user is in another active session
-    const userSessionCheck = await query(`
-      SELECT s.id
-      FROM game_sessions s
-      JOIN session_players sp ON s.id = sp.session_id
-      WHERE sp.user_id = $1 AND s.status IN ('waiting', 'active') AND s.id != $2
-    `, [userId, sessionId]);
+    const { data: userSessionCheck, error: userSessionError } = await supabase
+      .from('session_players')
+      .select(`
+        game_sessions!inner (
+          id
+        )
+      `)
+      .eq('user_id', userId)
+      .neq('session_id', sessionId)
+      .in('game_sessions.status', ['waiting', 'active']);
 
-    if (userSessionCheck.rows.length > 0) {
+    if (userSessionError) {
+      winston.error('Failed to check user sessions:', userSessionError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to check user sessions'
+        }
+      });
+    }
+
+    if (userSessionCheck && userSessionCheck.length > 0) {
       return res.status(409).json({
         error: {
           code: 'CONFLICT',
           message: 'User is already in another session',
-          current_session_id: userSessionCheck.rows[0].id
+          current_session_id: userSessionCheck[0].game_sessions.id
         }
       });
     }
@@ -303,13 +350,13 @@ const leaveSession = async (req, res) => {
     const { sessionId } = req.params;
 
     // Get current session info
-    const sessionResult = await query(`
-      SELECT id, host_user_id, player_ids, current_players, status
-      FROM game_sessions
-      WHERE id = $1
-    `, [sessionId]);
+    const { data: session, error: sessionError } = await supabase
+      .from('game_sessions')
+      .select('id, host_user_id, player_ids, current_players, status')
+      .eq('id', sessionId)
+      .single();
 
-    if (sessionResult.rows.length === 0) {
+    if (sessionError || !session) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -317,8 +364,6 @@ const leaveSession = async (req, res) => {
         }
       });
     }
-
-    const session = sessionResult.rows[0];
 
     // Check if user is in this session
     if (!session.player_ids.includes(userId)) {
@@ -394,18 +439,18 @@ const getSession = async (req, res) => {
     const { sessionId } = req.params;
     const userId = req.user ? req.user.id : null;
 
-    const sessionResult = await query(`
-      SELECT
-        s.id, s.host_user_id, s.game_mode, s.region, s.max_players,
-        s.current_players, s.player_ids, s.status, s.session_data,
-        s.created_at, s.started_at, s.ended_at,
-        u.username as host_username
-      FROM game_sessions s
-      JOIN users u ON s.host_user_id = u.id
-      WHERE s.id = $1
-    `, [sessionId]);
+    const { data: session, error: sessionError } = await supabase
+      .from('game_sessions')
+      .select(`
+        id, host_user_id, game_mode, region, max_players,
+        current_players, player_ids, status, session_data,
+        created_at, started_at, ended_at,
+        users!game_sessions_host_user_id_fkey(username)
+      `)
+      .eq('id', sessionId)
+      .single();
 
-    if (sessionResult.rows.length === 0) {
+    if (sessionError || !session) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -414,26 +459,42 @@ const getSession = async (req, res) => {
       });
     }
 
-    const session = sessionResult.rows[0];
+    // Fix the field name from the join
+    session.host_username = session.users?.username;
 
     // Get player details
-    const playersResult = await query(`
-      SELECT
-        sp.user_id, sp.player_status, sp.joined_at, sp.disconnected_at,
-        u.username, u.profile_data
-      FROM session_players sp
-      JOIN users u ON sp.user_id = u.id
-      WHERE sp.session_id = $1
-      ORDER BY sp.joined_at ASC
-    `, [sessionId]);
+    const { data: playersData, error: playersError } = await supabase
+      .from('session_players')
+      .select(`
+        user_id,
+        player_status,
+        joined_at,
+        disconnected_at,
+        users!session_players_user_id_fkey (
+          username,
+          profile_data
+        )
+      `)
+      .eq('session_id', sessionId)
+      .order('joined_at', { ascending: true });
 
-    const players = playersResult.rows.map(player => ({
+    if (playersError) {
+      winston.error('Failed to get player details:', playersError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get player details'
+        }
+      });
+    }
+
+    const players = playersData.map(player => ({
       user_id: player.user_id,
-      username: player.username,
+      username: player.users?.username,
       status: player.player_status,
       joined_at: player.joined_at,
       disconnected_at: player.disconnected_at,
-      profile_data: player.profile_data
+      profile_data: player.users?.profile_data
     }));
 
     const sessionData = session.session_data || {};
@@ -498,29 +559,47 @@ const listSessions = async (req, res) => {
       paramIndex++;
     }
 
-    // Exclude private sessions unless user is authenticated and invited
-    whereConditions.push(`NOT (s.session_data->>'isPrivate')::boolean`);
+    // Build Supabase query
+    let query = supabase
+      .from('game_sessions')
+      .select(`
+        id, host_user_id, game_mode, region, max_players,
+        current_players, status, created_at, session_data,
+        users!game_sessions_host_user_id_fkey(username)
+      `)
+      .eq('status', status)
+      .order('created_at', { ascending: false });
 
-    const whereClause = whereConditions.join(' AND ');
+    // Apply filters
+    if (gameMode) {
+      query = query.eq('game_mode', gameMode);
+    }
 
-    const sessionsResult = await query(`
-      SELECT
-        s.id, s.host_user_id, s.game_mode, s.region, s.max_players,
-        s.current_players, s.status, s.created_at,
-        u.username as host_username,
-        s.session_data
-      FROM game_sessions s
-      JOIN users u ON s.host_user_id = u.id
-      WHERE ${whereClause}
-      ORDER BY s.created_at DESC
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-    `, [...params, parseInt(limit), parseInt(offset)]);
+    if (region && region !== 'global') {
+      query = query.eq('region', region);
+    }
 
-    const sessions = sessionsResult.rows.map(session => ({
+    // Exclude private sessions
+    query = query.not('session_data->>isPrivate', 'is', true);
+
+    const { data: sessionsData, error: sessionsError } = await query
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+
+    if (sessionsError) {
+      winston.error('Failed to list sessions:', sessionsError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to list sessions'
+        }
+      });
+    }
+
+    const sessions = sessionsData.map(session => ({
       session_id: session.id,
       host: {
         user_id: session.host_user_id,
-        username: session.host_username
+        username: session.users?.username
       },
       game_mode: session.game_mode,
       region: session.region,
@@ -560,13 +639,13 @@ const updateSessionStatus = async (req, res) => {
     const { status, sessionData } = req.body;
 
     // Verify user is host
-    const sessionResult = await query(`
-      SELECT host_user_id, status as current_status
-      FROM game_sessions
-      WHERE id = $1
-    `, [sessionId]);
+    const { data: session, error: sessionError } = await supabase
+      .from('game_sessions')
+      .select('host_user_id, status')
+      .eq('id', sessionId)
+      .single();
 
-    if (sessionResult.rows.length === 0) {
+    if (sessionError || !session) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -575,7 +654,7 @@ const updateSessionStatus = async (req, res) => {
       });
     }
 
-    const session = sessionResult.rows[0];
+    session.current_status = session.status;
 
     if (session.host_user_id !== userId) {
       return res.status(403).json({
@@ -612,18 +691,26 @@ const updateSessionStatus = async (req, res) => {
       updateData.session_data = sessionData;
     }
 
-    await query(`
-      UPDATE game_sessions
-      SET status = $1, updated_at = $2, started_at = $3, ended_at = $4, session_data = session_data || $5
-      WHERE id = $6
-    `, [
-      updateData.status,
-      updateData.updated_at,
-      updateData.started_at || null,
-      updateData.ended_at || null,
-      JSON.stringify(sessionData || {}),
-      sessionId
-    ]);
+    const { error: updateError } = await supabase
+      .from('game_sessions')
+      .update({
+        status: updateData.status,
+        updated_at: updateData.updated_at,
+        started_at: updateData.started_at || null,
+        ended_at: updateData.ended_at || null,
+        session_data: sessionData || {}
+      })
+      .eq('id', sessionId);
+
+    if (updateError) {
+      winston.error('Failed to update session status:', updateError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to update session status'
+        }
+      });
+    }
 
     winston.info(`Session ${sessionId} status updated to ${status} by host ${userId}`);
 

@@ -1,4 +1,4 @@
-const { query } = require('../config/database');
+const { supabase } = require('../config/database');
 const { body, validationResult } = require('express-validator');
 const winston = require('winston');
 
@@ -28,17 +28,22 @@ const getIceServers = async (req, res) => {
     // Check if user has a session with TURN credentials
     let turnCredentials = null;
     if (userId) {
-      const sessionResult = await query(`
-        SELECT s.session_data
-        FROM game_sessions s
-        JOIN session_players sp ON s.id = sp.session_id
-        WHERE sp.user_id = $1 AND s.status IN ('waiting', 'active')
-        ORDER BY s.created_at DESC LIMIT 1
-      `, [userId]);
+      const { data: sessionData, error: sessionError } = await supabase
+        .from('session_players')
+        .select(`
+          game_sessions!inner (
+            session_data
+          )
+        `)
+        .eq('user_id', userId)
+        .in('game_sessions.status', ['waiting', 'active'])
+        .order('game_sessions.created_at', { ascending: false })
+        .limit(1)
+        .single();
 
-      if (sessionResult.rows.length > 0) {
-        const sessionData = sessionResult.rows[0].session_data || {};
-        turnCredentials = sessionData.turnCredentials;
+      if (!sessionError && sessionData) {
+        const sessionInfo = sessionData.game_sessions?.session_data || {};
+        turnCredentials = sessionInfo.turnCredentials;
       }
     }
 
@@ -113,16 +118,23 @@ const exchangeIceCandidates = async (req, res) => {
     const { sessionId, targetUserId, candidate } = req.body;
 
     // Verify both users are in the same session
-    const sessionCheck = await query(`
-      SELECT s.id, s.status
-      FROM game_sessions s
-      JOIN session_players sp1 ON s.id = sp1.session_id
-      JOIN session_players sp2 ON s.id = sp2.session_id
-      WHERE s.id = $1 AND sp1.user_id = $2 AND sp2.user_id = $3
-        AND s.status IN ('waiting', 'active')
-    `, [sessionId, userId, targetUserId]);
+    const { data: sessionPlayers, error: sessionError } = await supabase
+      .from('session_players')
+      .select(`
+        game_sessions!inner (
+          id,
+          status
+        )
+      `)
+      .eq('session_id', sessionId)
+      .in('user_id', [userId, targetUserId])
+      .in('game_sessions.status', ['waiting', 'active']);
 
-    if (sessionCheck.rows.length === 0) {
+    // Check that both users are in the session
+    const userInSession = sessionPlayers.some(sp => sp.user_id === userId);
+    const targetInSession = sessionPlayers.some(sp => sp.user_id === targetUserId);
+
+    if (sessionError || !userInSession || !targetInSession) {
       return res.status(403).json({
         error: {
           code: 'FORBIDDEN',
@@ -218,22 +230,32 @@ const reportNatType = async (req, res) => {
     };
 
     // Update user's network info in their active session
-    const sessionResult = await query(`
-      SELECT s.id
-      FROM game_sessions s
-      JOIN session_players sp ON s.id = sp.session_id
-      WHERE sp.user_id = $1 AND s.status IN ('waiting', 'active')
-      ORDER BY s.created_at DESC LIMIT 1
-    `, [userId]);
+    const { data: sessionData, error: sessionError } = await supabase
+      .from('session_players')
+      .select(`
+        game_sessions!inner (
+          id
+        )
+      `)
+      .eq('user_id', userId)
+      .in('game_sessions.status', ['waiting', 'active'])
+      .order('game_sessions.created_at', { ascending: false })
+      .limit(1);
 
-    if (sessionResult.rows.length > 0) {
-      const sessionId = sessionResult.rows[0].id;
+    if (!sessionError && sessionData && sessionData.length > 0) {
+      const sessionId = sessionData[0].game_sessions.id;
 
-      await query(`
-        UPDATE session_players
-        SET network_info = network_info || $1
-        WHERE session_id = $2 AND user_id = $3
-      `, [JSON.stringify(natInfo), sessionId, userId]);
+      const { error: updateError } = await supabase
+        .from('session_players')
+        .update({
+          network_info: natInfo
+        })
+        .eq('session_id', sessionId)
+        .eq('user_id', userId);
+
+      if (updateError) {
+        winston.error('Failed to update network info:', updateError);
+      }
 
       winston.info(`NAT type reported for user ${userId}: ${natType}`);
     }
@@ -265,14 +287,19 @@ const getNetworkDiagnostics = async (req, res) => {
     const userId = req.user.id;
 
     // Verify user is in the session
-    const sessionCheck = await query(`
-      SELECT s.id, s.status
-      FROM game_sessions s
-      JOIN session_players sp ON s.id = sp.session_id
-      WHERE s.id = $1 AND sp.user_id = $2
-    `, [sessionId, userId]);
+    const { data: sessionCheck, error: sessionError } = await supabase
+      .from('session_players')
+      .select(`
+        game_sessions!inner (
+          id,
+          status
+        )
+      `)
+      .eq('session_id', sessionId)
+      .eq('user_id', userId)
+      .single();
 
-    if (sessionCheck.rows.length === 0) {
+    if (sessionError || !sessionCheck) {
       return res.status(403).json({
         error: {
           code: 'FORBIDDEN',
@@ -282,22 +309,33 @@ const getNetworkDiagnostics = async (req, res) => {
     }
 
     // Get network info for all players in the session
-    const networkResult = await query(`
-      SELECT
-        sp.user_id,
-        sp.network_info,
-        u.username
-      FROM session_players sp
-      JOIN users u ON sp.user_id = u.id
-      WHERE sp.session_id = $1
-    `, [sessionId]);
+    const { data: networkData, error: networkError } = await supabase
+      .from('session_players')
+      .select(`
+        user_id,
+        network_info,
+        users!session_players_user_id_fkey (
+          username
+        )
+      `)
+      .eq('session_id', sessionId);
+
+    if (networkError) {
+      winston.error('Failed to get network diagnostics:', networkError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get network diagnostics'
+        }
+      });
+    }
 
     const diagnostics = {
       session_id: sessionId,
-      players: networkResult.rows.map(row => ({
-        user_id: row.user_id,
-        username: row.username,
-        network_info: row.network_info || {}
+      players: networkData.map(player => ({
+        user_id: player.user_id,
+        username: player.users?.username,
+        network_info: player.network_info || {}
       })),
       timestamp: new Date().toISOString()
     };
@@ -345,16 +383,16 @@ const testConnectivity = async (req, res) => {
     const { targetUserId, sessionId } = req.body;
 
     // Verify both users are in the same session
-    const sessionCheck = await query(`
-      SELECT s.id
-      FROM game_sessions s
-      JOIN session_players sp1 ON s.id = sp1.session_id
-      JOIN session_players sp2 ON s.id = sp2.session_id
-      WHERE s.id = $1 AND sp1.user_id = $2 AND sp2.user_id = $3
-        AND s.status IN ('waiting', 'active')
-    `, [sessionId, userId, targetUserId]);
+    const { data: sessionPlayers, error: sessionError } = await supabase
+      .from('session_players')
+      .select('user_id')
+      .eq('session_id', sessionId)
+      .in('user_id', [userId, targetUserId]);
 
-    if (sessionCheck.rows.length === 0) {
+    const userInSession = sessionPlayers.some(sp => sp.user_id === userId);
+    const targetInSession = sessionPlayers.some(sp => sp.user_id === targetUserId);
+
+    if (sessionError || !userInSession || !targetInSession) {
       return res.status(403).json({
         error: {
           code: 'FORBIDDEN',
@@ -364,16 +402,24 @@ const testConnectivity = async (req, res) => {
     }
 
     // Get network info for both users
-    const networkResult = await query(`
-      SELECT
-        sp.user_id,
-        sp.network_info
-      FROM session_players sp
-      WHERE sp.session_id = $1 AND sp.user_id IN ($2, $3)
-    `, [sessionId, userId, targetUserId]);
+    const { data: networkData, error: networkError } = await supabase
+      .from('session_players')
+      .select('user_id, network_info')
+      .eq('session_id', sessionId)
+      .in('user_id', [userId, targetUserId]);
+
+    if (networkError) {
+      winston.error('Failed to get network info:', networkError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get network information'
+        }
+      });
+    }
 
     const userNetworks = {};
-    networkResult.rows.forEach(row => {
+    networkData.forEach(row => {
       userNetworks[row.user_id] = row.network_info || {};
     });
 
@@ -469,19 +515,27 @@ const reportConnectionResult = async (req, res) => {
     const { targetUserId, sessionId, connectionType, success, latencyMs, packetLoss } = req.body;
 
     // Store connection result in network quality table
-    await query(`
-      INSERT INTO network_quality (
-        user_id, session_id, ping_ms, packet_loss_percent,
-        connection_type, connection_quality, recorded_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
-    `, [
-      userId,
-      sessionId,
-      latencyMs || null,
-      packetLoss || null,
-      connectionType,
-      success ? 'excellent' : 'poor'
-    ]);
+    const { error: insertError } = await supabase
+      .from('network_quality')
+      .insert([{
+        user_id: userId,
+        session_id: sessionId,
+        ping_ms: latencyMs || null,
+        packet_loss_percent: packetLoss || null,
+        connection_type: connectionType,
+        connection_quality: success ? 'excellent' : 'poor',
+        recorded_at: new Date().toISOString()
+      }]);
+
+    if (insertError) {
+      winston.error('Failed to record connection result:', insertError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to record connection result'
+        }
+      });
+    }
 
     winston.info(`Connection result reported: ${userId} -> ${targetUserId}, type: ${connectionType}, success: ${success}`);
 
@@ -513,14 +567,19 @@ const getSessionNetworkDiagnostics = async (req, res) => {
     const userId = req.user.id;
 
     // Verify user is in the session
-    const sessionCheck = await query(`
-      SELECT s.id, s.status
-      FROM game_sessions s
-      JOIN session_players sp ON s.id = sp.session_id
-      WHERE s.id = $1 AND sp.user_id = $2
-    `, [sessionId, userId]);
+    const { data: sessionCheck, error: sessionError } = await supabase
+      .from('session_players')
+      .select(`
+        game_sessions!inner (
+          id,
+          status
+        )
+      `)
+      .eq('session_id', sessionId)
+      .eq('user_id', userId)
+      .single();
 
-    if (sessionCheck.rows.length === 0) {
+    if (sessionError || !sessionCheck) {
       return res.status(403).json({
         error: {
           code: 'FORBIDDEN',
@@ -530,25 +589,36 @@ const getSessionNetworkDiagnostics = async (req, res) => {
     }
 
     // Get network quality data for all players in the session
-    const networkResult = await query(`
-      SELECT
-        nq.user_id,
-        u.username,
-        nq.ping_ms,
-        nq.packet_loss_percent,
-        nq.connection_type,
-        nq.nat_type,
-        nq.connection_quality,
-        nq.recorded_at
-      FROM network_quality nq
-      JOIN users u ON nq.user_id = u.id
-      WHERE nq.session_id = $1
-      ORDER BY nq.recorded_at DESC
-    `, [sessionId]);
+    const { data: networkData, error: networkError } = await supabase
+      .from('network_quality')
+      .select(`
+        user_id,
+        ping_ms,
+        packet_loss_percent,
+        connection_type,
+        nat_type,
+        connection_quality,
+        recorded_at,
+        users!network_quality_user_id_fkey (
+          username
+        )
+      `)
+      .eq('session_id', sessionId)
+      .order('recorded_at', { ascending: false });
+
+    if (networkError) {
+      winston.error('Failed to get network diagnostics:', networkError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get network diagnostics'
+        }
+      });
+    }
 
     // Aggregate network data
     const playerNetworks = {};
-    networkResult.rows.forEach(row => {
+    networkData.forEach(row => {
       if (!playerNetworks[row.user_id]) {
         playerNetworks[row.user_id] = {
           user_id: row.user_id,
@@ -636,55 +706,189 @@ const getNetworkAnalytics = async (req, res) => {
     }
 
     // Get network quality trends
-    const trendsResult = await query(`
-      SELECT
-        DATE_TRUNC('hour', nq.recorded_at) as hour,
-        COUNT(*) as measurements,
-        ROUND(AVG(nq.ping_ms)) as avg_ping,
-        ROUND(AVG(nq.packet_loss_percent), 2) as avg_packet_loss,
-        COUNT(CASE WHEN nq.connection_quality = 'excellent' THEN 1 END) as excellent_count,
-        COUNT(CASE WHEN nq.connection_quality = 'good' THEN 1 END) as good_count,
-        COUNT(CASE WHEN nq.connection_quality = 'fair' THEN 1 END) as fair_count,
-        COUNT(CASE WHEN nq.connection_quality = 'poor' THEN 1 END) as poor_count
-      FROM network_quality nq
-      LEFT JOIN game_sessions s ON nq.session_id = s.id
-      WHERE ${whereClause}
-      GROUP BY DATE_TRUNC('hour', nq.recorded_at)
-      ORDER BY hour DESC
-      LIMIT 24
-    `, params);
+    let trendsQuery = supabase
+      .from('network_quality')
+      .select(`
+        recorded_at,
+        ping_ms,
+        packet_loss_percent,
+        connection_quality,
+        game_sessions (
+          game_mode
+        )
+      `)
+      .gte('recorded_at', new Date(Date.now() - parseInt(hours) * 60 * 60 * 1000).toISOString())
+      .order('recorded_at', { ascending: false })
+      .limit(1000); // Get more data for aggregation
+
+    if (gameMode) {
+      trendsQuery = trendsQuery.eq('game_sessions.game_mode', gameMode);
+    }
+
+    const { data: trendsData, error: trendsError } = await trendsQuery;
+
+    if (trendsError) {
+      winston.error('Failed to get network trends:', trendsError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get network analytics'
+        }
+      });
+    }
+
+    // Aggregate trends by hour
+    const trendsMap = {};
+    trendsData.forEach(record => {
+      const hour = new Date(record.recorded_at).getHours();
+      if (!trendsMap[hour]) {
+        trendsMap[hour] = {
+          hour,
+          measurements: 0,
+          ping_sum: 0,
+          packet_loss_sum: 0,
+          excellent_count: 0,
+          good_count: 0,
+          fair_count: 0,
+          poor_count: 0
+        };
+      }
+      trendsMap[hour].measurements++;
+      if (record.ping_ms) trendsMap[hour].ping_sum += record.ping_ms;
+      if (record.packet_loss_percent) trendsMap[hour].packet_loss_sum += record.packet_loss_percent;
+
+      switch (record.connection_quality) {
+        case 'excellent': trendsMap[hour].excellent_count++; break;
+        case 'good': trendsMap[hour].good_count++; break;
+        case 'fair': trendsMap[hour].fair_count++; break;
+        case 'poor': trendsMap[hour].poor_count++; break;
+      }
+    });
+
+    const trendsResult = Object.values(trendsMap)
+      .map(trend => ({
+        hour: trend.hour,
+        measurements: trend.measurements,
+        avg_ping: Math.round(trend.ping_sum / trend.measurements) || 0,
+        avg_packet_loss: Math.round((trend.packet_loss_sum / trend.measurements) * 100) / 100 || 0,
+        excellent_count: trend.excellent_count,
+        good_count: trend.good_count,
+        fair_count: trend.fair_count,
+        poor_count: trend.poor_count
+      }))
+      .sort((a, b) => b.hour - a.hour)
+      .slice(0, 24);
 
     // Get connection type distribution
-    const connectionTypeResult = await query(`
-      SELECT
-        nq.connection_type,
-        COUNT(*) as count,
-        ROUND(AVG(nq.ping_ms)) as avg_ping,
-        COUNT(CASE WHEN nq.connection_quality IN ('excellent', 'good') THEN 1 END) as good_connections
-      FROM network_quality nq
-      LEFT JOIN game_sessions s ON nq.session_id = s.id
-      WHERE ${whereClause}
-      GROUP BY nq.connection_type
-      ORDER BY count DESC
-    `, params);
+    const { data: connectionTypeData, error: connTypeError } = await supabase
+      .from('network_quality')
+      .select(`
+        connection_type,
+        ping_ms,
+        connection_quality,
+        game_sessions (
+          game_mode
+        )
+      `)
+      .gte('recorded_at', new Date(Date.now() - parseInt(hours) * 60 * 60 * 1000).toISOString())
+      .not('connection_type', 'is', null);
+
+    if (connTypeError) {
+      winston.error('Failed to get connection types:', connTypeError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get network analytics'
+        }
+      });
+    }
+
+    // Aggregate connection types (filter by game mode if specified)
+    const filteredConnData = gameMode ?
+      connectionTypeData.filter(d => d.game_sessions?.game_mode === gameMode) :
+      connectionTypeData;
+
+    const connectionTypeMap = {};
+    filteredConnData.forEach(record => {
+      const type = record.connection_type;
+      if (!connectionTypeMap[type]) {
+        connectionTypeMap[type] = {
+          connection_type: type,
+          count: 0,
+          ping_sum: 0,
+          good_connections: 0
+        };
+      }
+      connectionTypeMap[type].count++;
+      if (record.ping_ms) connectionTypeMap[type].ping_sum += record.ping_ms;
+      if (['excellent', 'good'].includes(record.connection_quality)) {
+        connectionTypeMap[type].good_connections++;
+      }
+    });
+
+    const connectionTypeResult = Object.values(connectionTypeMap)
+      .map(item => ({
+        connection_type: item.connection_type,
+        count: item.count,
+        avg_ping: Math.round(item.ping_sum / item.count) || 0,
+        good_connections: item.good_connections
+      }))
+      .sort((a, b) => b.count - a.count);
 
     // Get NAT type distribution
-    const natTypeResult = await query(`
-      SELECT
-        nq.nat_type,
-        COUNT(*) as count,
-        ROUND(AVG(nq.ping_ms)) as avg_ping
-      FROM network_quality nq
-      LEFT JOIN game_sessions s ON nq.session_id = s.id
-      WHERE ${whereClause} AND nq.nat_type IS NOT NULL
-      GROUP BY nq.nat_type
-      ORDER BY count DESC
-    `, params);
+    const { data: natTypeData, error: natTypeError } = await supabase
+      .from('network_quality')
+      .select(`
+        nat_type,
+        ping_ms,
+        game_sessions (
+          game_mode
+        )
+      `)
+      .gte('recorded_at', new Date(Date.now() - parseInt(hours) * 60 * 60 * 1000).toISOString())
+      .not('nat_type', 'is', null);
+
+    if (natTypeError) {
+      winston.error('Failed to get NAT types:', natTypeError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get network analytics'
+        }
+      });
+    }
+
+    // Aggregate NAT types (filter by game mode if specified)
+    const filteredNatData = gameMode ?
+      natTypeData.filter(d => d.game_sessions?.game_mode === gameMode) :
+      natTypeData;
+
+    const natTypeMap = {};
+    filteredNatData.forEach(record => {
+      const type = record.nat_type;
+      if (!natTypeMap[type]) {
+        natTypeMap[type] = {
+          nat_type: type,
+          count: 0,
+          ping_sum: 0
+        };
+      }
+      natTypeMap[type].count++;
+      if (record.ping_ms) natTypeMap[type].ping_sum += record.ping_ms;
+    });
+
+    const natTypeResult = Object.values(natTypeMap)
+      .map(item => ({
+        nat_type: item.nat_type,
+        count: item.count,
+        avg_ping: Math.round(item.ping_sum / item.count) || 0
+      }))
+      .sort((a, b) => b.count - a.count);
 
     const analytics = {
       time_range_hours: parseInt(hours),
       game_mode_filter: gameMode || null,
-      trends: trendsResult.rows.map(row => ({
+      trends: trendsResult.map(row => ({
         hour: row.hour,
         measurements: parseInt(row.measurements),
         avg_ping_ms: parseInt(row.avg_ping) || null,
@@ -696,22 +900,22 @@ const getNetworkAnalytics = async (req, res) => {
           poor: parseInt(row.poor_count)
         }
       })),
-      connection_types: connectionTypeResult.rows.map(row => ({
+      connection_types: connectionTypeResult.map(row => ({
         type: row.connection_type,
         count: parseInt(row.count),
         avg_ping_ms: parseInt(row.avg_ping) || null,
         good_connections: parseInt(row.good_connections),
         success_rate: row.count > 0 ? Math.round((row.good_connections / row.count) * 100) : 0
       })),
-      nat_types: natTypeResult.rows.map(row => ({
+      nat_types: natTypeResult.map(row => ({
         type: row.nat_type,
         count: parseInt(row.count),
         avg_ping_ms: parseInt(row.avg_ping) || null
       })),
       summary: {
-        total_measurements: trendsResult.rows.reduce((sum, row) => sum + parseInt(row.measurements), 0),
-        avg_ping_across_period: trendsResult.rows.length > 0
-          ? Math.round(trendsResult.rows.reduce((sum, row) => sum + (parseInt(row.avg_ping) || 0), 0) / trendsResult.rows.length)
+        total_measurements: trendsResult.reduce((sum, row) => sum + parseInt(row.measurements), 0),
+        avg_ping_across_period: trendsResult.length > 0
+          ? Math.round(trendsResult.reduce((sum, row) => sum + (parseInt(row.avg_ping) || 0), 0) / trendsResult.length)
           : null
       },
       timestamp: new Date().toISOString()
@@ -738,19 +942,29 @@ const getNetworkRecommendations = async (req, res) => {
     const userId = req.user.id;
 
     // Get user's recent network data
-    const userNetworkResult = await query(`
-      SELECT
+    const { data: userNetworkData, error: networkError } = await supabase
+      .from('network_quality')
+      .select(`
         ping_ms,
         packet_loss_percent,
         connection_type,
         nat_type,
         connection_quality,
         recorded_at
-      FROM network_quality
-      WHERE user_id = $1
-      ORDER BY recorded_at DESC
-      LIMIT 10
-    `, [userId]);
+      `)
+      .eq('user_id', userId)
+      .order('recorded_at', { ascending: false })
+      .limit(10);
+
+    if (networkError) {
+      winston.error('Failed to get user network data:', networkError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get network recommendations'
+        }
+      });
+    }
 
     const recommendations = {
       user_id: userId,
@@ -759,7 +973,7 @@ const getNetworkRecommendations = async (req, res) => {
       timestamp: new Date().toISOString()
     };
 
-    if (userNetworkResult.rows.length === 0) {
+    if (!userNetworkData || userNetworkData.length === 0) {
       recommendations.recommendations.push({
         type: 'info',
         message: 'No network data available. Play some games to get network recommendations.',
@@ -768,7 +982,7 @@ const getNetworkRecommendations = async (req, res) => {
       return res.json(recommendations);
     }
 
-    const measurements = userNetworkResult.rows;
+    const measurements = userNetworkData;
 
     // Analyze ping
     const avgPing = measurements.reduce((sum, m) => sum + (m.ping_ms || 0), 0) / measurements.length;

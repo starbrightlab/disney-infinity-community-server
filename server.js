@@ -14,6 +14,8 @@ const winston = require('winston');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const { supabase } = require('./config/database');
 
 // Load environment variables
 require('dotenv').config();
@@ -585,6 +587,131 @@ app.use('/api/v1/achievements', rateLimiters.general, achievementsRoutes);
 app.use('/api/v1/sync', rateLimiters.general, syncRoutes);
 app.use('/api/v1/analytics', rateLimiters.general, analyticsRoutes);
 
+// Test endpoints for debugging (remove after fixing login)
+app.post('/api/v1/test/login-query', async (req, res) => {
+  try {
+    const { username } = req.body;
+    console.log('🧪 TEST: Querying database for user:', username);
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, username, email, password_hash, is_active')
+      .or(`username.eq.${username},email.eq.${username}`)
+      .single();
+
+    console.log('🧪 TEST RESULT:', {
+      success: !error && !!user,
+      hasUser: !!user,
+      hasError: !!error,
+      userData: user ? {
+        id: user.id,
+        username: user.username,
+        hasPasswordHash: !!user.password_hash,
+        isActive: user.is_active
+      } : null,
+      errorMessage: error?.message
+    });
+
+    res.json({
+      success: !error && !!user,
+      user: user ? {
+        id: user.id,
+        username: user.username,
+        hasPasswordHash: !!user.password_hash,
+        isActive: user.is_active
+      } : null,
+      error: error?.message
+    });
+  } catch (error) {
+    console.error('🧪 TEST ERROR:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+app.post('/api/v1/test/password-check', async (req, res) => {
+  try {
+    const { password, hash } = req.body;
+
+    console.log('🧪 TEST: Password verification', {
+      passwordLength: password.length,
+      hashLength: hash.length,
+      hashPreview: hash.substring(0, 20) + '...'
+    });
+
+    const isValid = await bcrypt.compare(password, hash);
+
+    console.log('🧪 TEST RESULT: Password verification', {
+      isValid,
+      passwordLength: password.length,
+      hashLength: hash.length
+    });
+
+    res.json({
+      success: true,
+      isValid,
+      passwordLength: password.length,
+      hashLength: hash.length
+    });
+  } catch (error) {
+    console.error('🧪 PASSWORD TEST ERROR:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/v1/test/jwt-generate', (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    console.log('🧪 TEST: JWT generation for userId:', userId);
+    console.log('🧪 TEST: JWT_SECRET exists:', !!process.env.JWT_SECRET);
+    console.log('🧪 TEST: JWT_SECRET length:', process.env.JWT_SECRET?.length);
+
+    const accessToken = jwt.sign(
+      { userId, type: 'access' },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '1h' }
+    );
+    const refreshToken = jwt.sign(
+      { userId, type: 'refresh' },
+      process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d' }
+    );
+
+    // Verify tokens can be decoded
+    const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
+
+    console.log('🧪 TEST RESULT: JWT generation successful', {
+      accessTokenLength: accessToken.length,
+      refreshTokenLength: refreshToken.length,
+      decodedUserId: decoded.userId,
+      decodedType: decoded.type
+    });
+
+    res.json({
+      success: true,
+      tokens: {
+        access: accessToken.substring(0, 50) + '...',
+        refresh: refreshToken.substring(0, 50) + '...'
+      },
+      decoded: {
+        userId: decoded.userId,
+        type: decoded.type
+      }
+    });
+  } catch (error) {
+    console.error('🧪 JWT TEST ERROR:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 // 404 handler for unknown endpoints
 app.use('/api/*', (req, res) => {

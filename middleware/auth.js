@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { query } = require('../config/database');
+const { supabase } = require('../config/database');
 const winston = require('winston');
 
 /**
@@ -27,12 +27,13 @@ const authenticateToken = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Get user from database to ensure they still exist and are active
-    const userResult = await query(
-      'SELECT id, username, email, is_admin, is_moderator, is_active FROM users WHERE id = $1',
-      [decoded.userId]
-    );
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, username, email, is_admin, is_moderator, is_active')
+      .eq('id', decoded.userId)
+      .single();
 
-    if (userResult.rows.length === 0) {
+    if (userError || !user) {
       return res.status(401).json({
         error: {
           code: 'UNAUTHORIZED',
@@ -40,8 +41,6 @@ const authenticateToken = async (req, res, next) => {
         }
       });
     }
-
-    const user = userResult.rows[0];
 
     if (!user.is_active) {
       return res.status(401).json({
@@ -136,13 +135,13 @@ const optionalAuth = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const userResult = await query(
-      'SELECT id, username, email, is_admin, is_moderator, is_active FROM users WHERE id = $1',
-      [decoded.userId]
-    );
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, username, email, is_admin, is_moderator, is_active')
+      .eq('id', decoded.userId)
+      .single();
 
-    if (userResult.rows.length > 0 && userResult.rows[0].is_active) {
-      const user = userResult.rows[0];
+    if (!userError && user && user.is_active) {
       req.user = {
         id: user.id,
         username: user.username,

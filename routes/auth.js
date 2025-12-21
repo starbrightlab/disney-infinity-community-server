@@ -19,17 +19,16 @@ router.post('/refresh', refresh);
 // Get current user profile (requires authentication)
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const { query } = require('../config/database');
+    const { supabase } = require('../config/database');
 
-    const result = await query(`
-      SELECT id, username, email, profile_data, created_at, last_login,
-             (SELECT COUNT(*) FROM toyboxes WHERE creator_id = users.id) as toyboxes_created,
-             (SELECT COUNT(*) FROM toybox_downloads WHERE user_id = users.id) as toyboxes_downloaded,
-             (SELECT COALESCE(SUM(download_count), 0) FROM toyboxes WHERE creator_id = users.id) as total_downloads
-      FROM users WHERE id = $1
-    `, [req.user.id]);
+    // Get user profile data
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, username, email, profile_data, created_at, last_login')
+      .eq('id', req.user.id)
+      .single();
 
-    if (result.rows.length === 0) {
+    if (userError || !user) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -38,7 +37,22 @@ router.get('/profile', authenticateToken, async (req, res) => {
       });
     }
 
-    const user = result.rows[0];
+    // Get toybox stats
+    const { data: toyboxStats, error: statsError } = await supabase
+      .from('toyboxes')
+      .select('id, download_count', { count: 'exact' })
+      .eq('creator_id', req.user.id);
+
+    const { data: downloadStats, error: downloadError } = await supabase
+      .from('toybox_downloads')
+      .select('id', { count: 'exact' })
+      .eq('user_id', req.user.id);
+
+    // Calculate stats (handle potential errors gracefully)
+    const toyboxesCreated = toyboxStats ? toyboxStats.length : 0;
+    const toyboxesDownloaded = downloadStats ? downloadStats.length : 0;
+    const totalDownloads = toyboxStats ?
+      toyboxStats.reduce((sum, toybox) => sum + (toybox.download_count || 0), 0) : 0;
 
     res.json({
       id: user.id,
@@ -48,9 +62,9 @@ router.get('/profile', authenticateToken, async (req, res) => {
       created_at: user.created_at,
       last_login: user.last_login,
       stats: {
-        toyboxes_created: parseInt(user.toyboxes_created),
-        toyboxes_downloaded: parseInt(user.toyboxes_downloaded),
-        total_downloads: parseInt(user.total_downloads)
+        toyboxes_created: toyboxesCreated,
+        toyboxes_downloaded: toyboxesDownloaded,
+        total_downloads: totalDownloads
       }
     });
 
@@ -69,7 +83,7 @@ router.get('/profile', authenticateToken, async (req, res) => {
 // Update user profile
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
-    const { query } = require('../config/database');
+    const { supabase } = require('../config/database');
     const { profile_data } = req.body;
 
     if (!profile_data || typeof profile_data !== 'object') {
@@ -81,12 +95,14 @@ router.put('/profile', authenticateToken, async (req, res) => {
       });
     }
 
-    const result = await query(
-      'UPDATE users SET profile_data = profile_data || $1 WHERE id = $2 RETURNING profile_data',
-      [profile_data, req.user.id]
-    );
+    // First get current profile data
+    const { data: currentUser, error: getError } = await supabase
+      .from('users')
+      .select('profile_data')
+      .eq('id', req.user.id)
+      .single();
 
-    if (result.rows.length === 0) {
+    if (getError || !currentUser) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -95,8 +111,30 @@ router.put('/profile', authenticateToken, async (req, res) => {
       });
     }
 
+    // Merge profile data
+    const updatedProfileData = { ...currentUser.profile_data, ...profile_data };
+
+    // Update the profile
+    const { data: updatedUser, error: updateError } = await supabase
+      .from('users')
+      .update({ profile_data: updatedProfileData })
+      .eq('id', req.user.id)
+      .select('profile_data')
+      .single();
+
+    if (updateError) {
+      const winston = require('winston');
+      winston.error('Profile update error:', updateError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to update profile'
+        }
+      });
+    }
+
     res.json({
-      profile_data: result.rows[0].profile_data
+      profile_data: updatedUser.profile_data
     });
 
   } catch (err) {

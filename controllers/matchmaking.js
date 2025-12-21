@@ -1,4 +1,4 @@
-const { query, transaction } = require('../config/database');
+const { supabase } = require('../config/database');
 const { body, validationResult } = require('express-validator');
 const winston = require('winston');
 
@@ -58,15 +58,25 @@ const joinMatchmaking = async (req, res) => {
     } = req.body;
 
     // Check if user is already in matchmaking queue
-    const existingQueue = await query(
-      `SELECT id, created_at FROM matchmaking_queue
-       WHERE user_id = $1 AND status = 'active'`,
-      [userId]
-    );
+    const { data: existingQueue, error: queueError } = await supabase
+      .from('matchmaking_queue')
+      .select('id, created_at')
+      .eq('user_id', userId)
+      .eq('status', 'active');
 
-    if (existingQueue.rows.length > 0) {
+    if (queueError) {
+      winston.error('Failed to check existing matchmaking queue:', queueError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to check matchmaking queue'
+        }
+      });
+    }
+
+    if (existingQueue && existingQueue.length > 0) {
       // User already in queue, return current status
-      const queueEntry = existingQueue.rows[0];
+      const queueEntry = existingQueue[0];
       const queueTime = Math.floor((Date.now() - new Date(queueEntry.created_at).getTime()) / 1000);
 
       return res.json({
@@ -80,15 +90,29 @@ const joinMatchmaking = async (req, res) => {
     }
 
     // Add user to matchmaking queue
-    const result = await query(
-      `INSERT INTO matchmaking_queue (
-        user_id, game_mode, region, skill_level, max_players, preferences, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
-      RETURNING id, created_at`,
-      [userId, gameMode, region, skillLevel, maxPlayers, JSON.stringify(preferences)]
-    );
+    const { data: queueEntry, error: insertError } = await supabase
+      .from('matchmaking_queue')
+      .insert([{
+        user_id: userId,
+        game_mode: gameMode,
+        region: region,
+        skill_level: skillLevel,
+        max_players: maxPlayers,
+        preferences: preferences,
+        status: 'active'
+      }])
+      .select('id, created_at')
+      .single();
 
-    const queueEntry = result.rows[0];
+    if (insertError) {
+      winston.error('Failed to add user to matchmaking queue:', insertError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to join matchmaking queue'
+        }
+      });
+    }
 
     // Try to find a match immediately
     const match = await findMatch(userId, gameMode, region, skillLevel, maxPlayers);
@@ -98,10 +122,15 @@ const joinMatchmaking = async (req, res) => {
       const sessionResult = await createMatchSession(match.hostUserId, match.players, gameMode, maxPlayers);
 
       // Remove all matched players from queue
-      await query(
-        'UPDATE matchmaking_queue SET status = \'matched\' WHERE user_id = ANY($1)',
-        [match.players]
-      );
+      const { error: updateError } = await supabase
+        .from('matchmaking_queue')
+        .update({ status: 'matched' })
+        .in('user_id', match.players);
+
+      if (updateError) {
+        winston.error('Failed to update matched players:', updateError);
+        // Continue anyway, match was found
+      }
 
       winston.info(`Match found for game mode ${gameMode}, session: ${sessionResult.id}`);
 
@@ -146,15 +175,27 @@ const leaveMatchmaking = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const result = await query(
-      `UPDATE matchmaking_queue
-       SET status = 'cancelled', updated_at = NOW()
-       WHERE user_id = $1 AND status = 'active'
-       RETURNING id`,
-      [userId]
-    );
+    const { data: result, error: updateError } = await supabase
+      .from('matchmaking_queue')
+      .update({
+        status: 'cancelled',
+        updated_at: new Date().toISOString()
+      })
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .select('id');
 
-    if (result.rows.length === 0) {
+    if (updateError) {
+      winston.error('Failed to leave matchmaking queue:', updateError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to leave matchmaking queue'
+        }
+      });
+    }
+
+    if (!result || result.length === 0) {
       return res.status(404).json({
         error: {
           code: 'NOT_FOUND',
@@ -188,22 +229,32 @@ const getMatchmakingStatus = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const result = await query(
-      `SELECT id, game_mode, region, skill_level, created_at, status
-       FROM matchmaking_queue
-       WHERE user_id = $1 AND status = 'active'
-       ORDER BY created_at DESC LIMIT 1`,
-      [userId]
-    );
+    const { data: result, error: statusError } = await supabase
+      .from('matchmaking_queue')
+      .select('id, game_mode, region, skill_level, created_at, status')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(1);
 
-    if (result.rows.length === 0) {
+    if (statusError) {
+      winston.error('Failed to get matchmaking status:', statusError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get matchmaking status'
+        }
+      });
+    }
+
+    if (!result || result.length === 0) {
       return res.json({
         in_queue: false,
         status: 'not_queued'
       });
     }
 
-    const queueEntry = result.rows[0];
+    const queueEntry = result[0];
     const queueTime = Math.floor((Date.now() - new Date(queueEntry.created_at).getTime()) / 1000);
 
     res.json({
@@ -234,26 +285,69 @@ const getMatchmakingStatus = async (req, res) => {
 const getMatchmakingStats = async (req, res) => {
   try {
     // Get queue statistics by game mode
-    const queueStats = await query(`
-      SELECT
-        game_mode,
-        COUNT(*) as players_in_queue,
-        AVG(EXTRACT(EPOCH FROM (NOW() - created_at))) as avg_queue_time_seconds
-      FROM matchmaking_queue
-      WHERE status = 'active'
-      GROUP BY game_mode
-    `);
+    const { data: queueStats, error: queueError } = await supabase
+      .from('matchmaking_queue')
+      .select('game_mode, created_at')
+      .eq('status', 'active');
+
+    if (queueError) {
+      winston.error('Failed to get queue stats:', queueError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get matchmaking statistics'
+        }
+      });
+    }
+
+    // Aggregate queue stats by game mode
+    const queueStatsMap = {};
+    queueStats.forEach(entry => {
+      if (!queueStatsMap[entry.game_mode]) {
+        queueStatsMap[entry.game_mode] = { players_in_queue: 0, total_queue_time: 0 };
+      }
+      queueStatsMap[entry.game_mode].players_in_queue++;
+      const queueTime = (Date.now() - new Date(entry.created_at).getTime()) / 1000;
+      queueStatsMap[entry.game_mode].total_queue_time += queueTime;
+    });
+
+    const processedQueueStats = Object.entries(queueStatsMap).map(([gameMode, stats]) => ({
+      game_mode: gameMode,
+      players_in_queue: stats.players_in_queue,
+      avg_queue_time_seconds: stats.players_in_queue > 0 ? stats.total_queue_time / stats.players_in_queue : 0
+    }));
 
     // Get active sessions
-    const activeSessions = await query(`
-      SELECT
-        game_mode,
-        COUNT(*) as active_sessions,
-        SUM(current_players) as total_players
-      FROM game_sessions
-      WHERE status = 'active'
-      GROUP BY game_mode
-    `);
+    const { data: activeSessions, error: sessionsError } = await supabase
+      .from('game_sessions')
+      .select('game_mode, current_players')
+      .eq('status', 'active');
+
+    if (sessionsError) {
+      winston.error('Failed to get active sessions:', sessionsError);
+      return res.status(500).json({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Failed to get session statistics'
+        }
+      });
+    }
+
+    // Aggregate session stats by game mode
+    const sessionStatsMap = {};
+    activeSessions.forEach(session => {
+      if (!sessionStatsMap[session.game_mode]) {
+        sessionStatsMap[session.game_mode] = { active_sessions: 0, total_players: 0 };
+      }
+      sessionStatsMap[session.game_mode].active_sessions++;
+      sessionStatsMap[session.game_mode].total_players += session.current_players;
+    });
+
+    const processedActiveSessions = Object.entries(sessionStatsMap).map(([gameMode, stats]) => ({
+      game_mode: gameMode,
+      active_sessions: stats.active_sessions,
+      total_players: stats.total_players
+    }));
 
     const stats = {
       queue: {},
@@ -262,7 +356,7 @@ const getMatchmakingStats = async (req, res) => {
     };
 
     // Process queue stats
-    queueStats.rows.forEach(row => {
+    processedQueueStats.forEach(row => {
       stats.queue[row.game_mode] = {
         players_waiting: parseInt(row.players_in_queue),
         avg_wait_time_seconds: Math.floor(parseFloat(row.avg_queue_time_seconds) || 0)
@@ -270,7 +364,7 @@ const getMatchmakingStats = async (req, res) => {
     });
 
     // Process session stats
-    activeSessions.rows.forEach(row => {
+    processedActiveSessions.forEach(row => {
       stats.sessions[row.game_mode] = {
         active_games: parseInt(row.active_sessions),
         total_players: parseInt(row.total_players)
@@ -302,45 +396,57 @@ const getMatchmakingStats = async (req, res) => {
 async function findMatch(userId, gameMode, region, skillLevel, maxPlayers) {
   try {
     // Look for existing sessions that need players
-    const availableSessions = await query(`
-      SELECT
-        gs.id,
-        gs.host_user_id,
-        gs.current_players,
-        gs.max_players,
-        gs.player_ids,
-        gs.created_at
-      FROM game_sessions gs
-      WHERE gs.status = 'waiting'
-        AND gs.game_mode = $1
-        AND gs.max_players = $2
-        AND gs.current_players < gs.max_players
-        AND gs.region = $3
-      ORDER BY gs.created_at ASC
-      LIMIT 10
-    `, [gameMode, maxPlayers, region]);
+    const { data: availableSessions, error: sessionsError } = await supabase
+      .from('game_sessions')
+      .select('id, host_user_id, current_players, max_players, player_ids, created_at')
+      .eq('status', 'waiting')
+      .eq('game_mode', gameMode)
+      .eq('max_players', maxPlayers)
+      .lt('current_players', maxPlayers)  // Use lt (less than) for comparison
+      .eq('region', region)
+      .order('created_at', { ascending: true })
+      .limit(10);
+
+    if (sessionsError) {
+      winston.error('Failed to find available sessions:', sessionsError);
+      return null;
+    }
 
     // Try to join an existing session
-    for (const session of availableSessions.rows) {
+    for (const session of availableSessions) {
       // Check if user is not already in this session
       if (!session.player_ids.includes(userId)) {
         const newPlayerIds = [...session.player_ids, userId];
         const newPlayerCount = session.current_players + 1;
 
         // Update session with new player
-        await query(`
-          UPDATE game_sessions
-          SET player_ids = $1, current_players = $2, updated_at = NOW()
-          WHERE id = $3
-        `, [newPlayerIds, newPlayerCount, session.id]);
+        const { error: updateError } = await supabase
+          .from('game_sessions')
+          .update({
+            player_ids: newPlayerIds,
+            current_players: newPlayerCount,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', session.id);
+
+        if (updateError) {
+          winston.error('Failed to update session with new player:', updateError);
+          continue; // Try next session
+        }
 
         // If session is now full, start it
         if (newPlayerCount >= session.max_players) {
-          await query(`
-            UPDATE game_sessions
-            SET status = 'active', started_at = NOW()
-            WHERE id = $1
-          `, [session.id]);
+          const { error: startError } = await supabase
+            .from('game_sessions')
+            .update({
+              status: 'active',
+              started_at: new Date().toISOString()
+            })
+            .eq('id', session.id);
+
+          if (startError) {
+            winston.error('Failed to start full session:', startError);
+          }
         }
 
         return {
@@ -352,21 +458,31 @@ async function findMatch(userId, gameMode, region, skillLevel, maxPlayers) {
     }
 
     // No suitable existing session found, look for other players in queue
-    const queuedPlayers = await query(`
-      SELECT user_id, skill_level, created_at
-      FROM matchmaking_queue
-      WHERE status = 'active'
-        AND game_mode = $1
-        AND region = $2
-        AND max_players = $3
-        AND user_id != $4
-      ORDER BY
-        ABS(skill_level - $5) ASC,  -- Prefer similar skill levels
-        created_at ASC              -- Then by queue time
-      LIMIT $6
-    `, [gameMode, region, maxPlayers, userId, skillLevel, maxPlayers - 1]);
+    const { data: queuedPlayers, error: queueError } = await supabase
+      .from('matchmaking_queue')
+      .select('user_id, skill_level, created_at')
+      .eq('status', 'active')
+      .eq('game_mode', gameMode)
+      .eq('region', region)
+      .eq('max_players', maxPlayers)
+      .neq('user_id', userId)
+      .order('created_at', { ascending: true })
+      .limit(maxPlayers - 1);
 
-    if (queuedPlayers.rows.length >= maxPlayers - 1) {
+    if (queueError) {
+      winston.error('Failed to find queued players:', queueError);
+      return null;
+    }
+
+    // Sort by skill level proximity (similar to ABS(skill_level - $5) ASC)
+    queuedPlayers.sort((a, b) => {
+      const aDiff = Math.abs(a.skill_level - skillLevel);
+      const bDiff = Math.abs(b.skill_level - skillLevel);
+      if (aDiff !== bDiff) return aDiff - bDiff;
+      return new Date(a.created_at) - new Date(b.created_at);
+    });
+
+    if (queuedPlayers.length >= maxPlayers - 1) {
       // Enough players for a match! Create new session
       const players = [userId, ...queuedPlayers.rows.map(p => p.user_id)];
 
@@ -403,21 +519,40 @@ async function findMatch(userId, gameMode, region, skillLevel, maxPlayers) {
  * @returns {Object} Session data
  */
 async function createMatchSession(hostUserId, playerIds, gameMode, maxPlayers) {
-  const sessionResult = await query(`
-    INSERT INTO game_sessions (
-      host_user_id, game_mode, max_players, current_players, player_ids, status, region
-    ) VALUES ($1, $2, $3, $4, $5, 'waiting', 'global')
-    RETURNING id, created_at
-  `, [hostUserId, gameMode, maxPlayers, playerIds.length, playerIds]);
+  const { data: session, error: sessionError } = await supabase
+    .from('game_sessions')
+    .insert([{
+      host_user_id: hostUserId,
+      game_mode: gameMode,
+      max_players: maxPlayers,
+      current_players: playerIds.length,
+      player_ids: playerIds,
+      status: 'waiting',
+      region: 'global'
+    }])
+    .select('id, created_at')
+    .single();
 
-  const session = sessionResult.rows[0];
+  if (sessionError) {
+    winston.error('Failed to create match session:', sessionError);
+    throw sessionError;
+  }
 
   // Create session player records
-  for (const playerId of playerIds) {
-    await query(`
-      INSERT INTO session_players (session_id, user_id, player_status, joined_at)
-      VALUES ($1, $2, 'joined', NOW())
-    `, [session.id, playerId]);
+  const playerInserts = playerIds.map(playerId => ({
+    session_id: session.id,
+    user_id: playerId,
+    player_status: 'joined',
+    joined_at: new Date().toISOString()
+  }));
+
+  const { error: playersError } = await supabase
+    .from('session_players')
+    .insert(playerInserts);
+
+  if (playersError) {
+    winston.error('Failed to create session player records:', playersError);
+    throw playersError;
   }
 
   return {
