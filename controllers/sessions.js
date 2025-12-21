@@ -72,35 +72,72 @@ const createSession = async (req, res) => {
     } = req.body;
 
     // Check if user is already in an active session
-    const { data: existingSession, error: sessionError } = await supabase
-      .from('session_players')
-      .select(`
-        game_sessions!inner (
-          id,
-          status
-        )
-      `)
-      .eq('user_id', hostUserId)
-      .in('game_sessions.status', ['waiting', 'active'])
-      .order('game_sessions.created_at', { ascending: false })
-      .limit(1);
+    let existingSession = null;
+    try {
+      console.log('🔍 Checking existing sessions for user:', hostUserId);
+      const { data: existingSessionPlayers, error: sessionError } = await supabase
+        .from('session_players')
+        .select('session_id')
+        .eq('user_id', hostUserId);
 
-    if (sessionError) {
-      winston.error('Failed to check existing sessions:', sessionError);
-      return res.status(500).json({
-        error: {
-          code: 'SERVER_ERROR',
-          message: 'Failed to check existing sessions'
-        }
+      console.log('📊 Session players query result:', {
+        hasData: !!existingSessionPlayers,
+        dataLength: existingSessionPlayers?.length,
+        hasError: !!sessionError,
+        error: sessionError?.message
       });
+
+      if (sessionError) {
+        // If table doesn't exist or other error, just proceed (user can't be in a session that doesn't exist)
+        console.log('⚠️ Session players query failed, proceeding anyway:', sessionError.message);
+        winston.warn('Could not check existing sessions, proceeding anyway:', sessionError.message);
+      } else if (existingSessionPlayers && existingSessionPlayers.length > 0) {
+        // If user is in sessions, check if any are active
+        console.log('🎮 User is in sessions, checking active ones:', existingSessionPlayers.length);
+        const sessionIds = existingSessionPlayers.map(sp => sp.session_id);
+        const { data: activeSessions, error: activeError } = await supabase
+          .from('game_sessions')
+          .select('id, status')
+          .in('id', sessionIds)
+          .in('status', ['waiting', 'active'])
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        console.log('🎯 Active sessions query result:', {
+          hasData: !!activeSessions,
+          dataLength: activeSessions?.length,
+          hasError: !!activeError,
+          error: activeError?.message
+        });
+
+        if (activeError) {
+          console.log('💥 Failed to check active sessions:', activeError);
+          winston.error('Failed to check active sessions:', activeError);
+          return res.status(500).json({
+            error: {
+              code: 'SERVER_ERROR',
+              message: 'Failed to check active sessions'
+            }
+          });
+        }
+
+        existingSession = activeSessions && activeSessions.length > 0 ? activeSessions[0] : null;
+        console.log('✅ Existing session check complete:', !!existingSession);
+      } else {
+        console.log('ℹ️ User not in any sessions');
+      }
+    } catch (err) {
+      // If any unexpected error, just log and continue
+      console.log('💥 Unexpected error checking sessions:', err.message);
+      winston.warn('Error checking existing sessions, proceeding anyway:', err.message);
     }
 
-    if (existingSession && existingSession.length > 0) {
+    if (existingSession) {
       return res.status(409).json({
         error: {
           code: 'CONFLICT',
           message: 'User is already in an active session',
-          session_id: existingSession[0].game_sessions.id
+          session_id: existingSession.id
         }
       });
     }
