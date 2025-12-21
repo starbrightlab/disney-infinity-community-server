@@ -392,8 +392,6 @@ const updateSteamLobby = async (req, res) => {
       });
     }
 
-    const session = sessionResult.rows[0];
-
     if (!session.steam_lobby_id) {
       return res.status(404).json({
         error: {
