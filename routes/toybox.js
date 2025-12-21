@@ -44,7 +44,7 @@ router.get('/simple', async (req, res) => {
     const { supabase } = require('../config/database');
     const { data, error } = await supabase
       .from('toyboxes')
-      .select('id,name,created_at')
+      .select('id,title,created_at,creator_id')
       .limit(5);
 
     if (error) {
