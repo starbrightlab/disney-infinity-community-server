@@ -57,20 +57,8 @@ const pool = {
   }
 };
 
-// Handle pool errors
-pool.on('error', (err, client) => {
-  winston.error('Unexpected error on idle client', err);
-  process.exit(-1);
-});
-
-// Handle pool connection events
-pool.on('connect', (client) => {
-  winston.debug('New client connected to database');
-});
-
-pool.on('remove', (client) => {
-  winston.debug('Client removed from pool');
-});
+// Supabase client handles connection management automatically
+// No need for pool event listeners
 
 /**
  * Execute a query with proper error handling
