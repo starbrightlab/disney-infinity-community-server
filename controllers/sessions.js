@@ -617,8 +617,7 @@ const listSessions = async (req, res) => {
       .from('game_sessions')
       .select(`
         id, host_user_id, game_mode, region, max_players,
-        current_players, status, created_at, session_data,
-        users!game_sessions_host_user_id_fkey(username)
+        current_players, status, created_at, session_data
       `)
       .eq('status', status)
       .order('created_at', { ascending: false });
@@ -651,8 +650,7 @@ const listSessions = async (req, res) => {
     const sessions = sessionsData.map(session => ({
       session_id: session.id,
       host: {
-        user_id: session.host_user_id,
-        username: session.users?.username
+        user_id: session.host_user_id
       },
       game_mode: session.game_mode,
       region: session.region,
