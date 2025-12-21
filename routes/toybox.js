@@ -68,7 +68,7 @@ router.get('/simple', async (req, res) => {
   }
 });
 
-// Simplified list toyboxes for debugging (temporary)
+// Simplified list toyboxes for debugging (temporary) - no middleware
 router.get('/basic', async (req, res) => {
   try {
     const { supabase } = require('../config/database');
