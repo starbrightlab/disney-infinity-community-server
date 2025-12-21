@@ -386,8 +386,12 @@ const listValidation = [
  */
 const listToyboxes = async (req, res) => {
   try {
+    console.log('🎯 LIST TOYBOXES: Starting request');
+    console.log('Query params:', req.query);
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('❌ LIST TOYBOXES: Validation failed:', errors.array());
       return res.status(400).json({
         error: {
           code: 'INVALID_REQUEST',
@@ -396,6 +400,8 @@ const listToyboxes = async (req, res) => {
         }
       });
     }
+
+    console.log('✅ LIST TOYBOXES: Validation passed');
 
     const {
       page = 1,
@@ -500,44 +506,84 @@ const listToyboxes = async (req, res) => {
       WHERE ${whereClause}
     `;
 
-    const countResult = await query(countQuery, queryParams);
-    const total = parseInt(countResult.rows[0].total);
+    console.log('🔢 LIST TOYBOXES: Executing count query...');
+    console.log('Count query:', countQuery);
+    console.log('Query params:', queryParams);
 
-    // Get paginated results
+    // Execute count query using Supabase
+    const { count, error: countError } = await supabase
+      .from('toyboxes')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 3);
+
+    if (countError) {
+      console.log('❌ LIST TOYBOXES: Count query failed:', countError);
+      throw countError;
+    }
+
+    const total = count || 0;
+    console.log('✅ LIST TOYBOXES: Count query succeeded, total:', total);
+
+    // Get paginated results using Supabase client
+    console.log('📄 LIST TOYBOXES: Executing data query...');
+
     const offset = (page - 1) * page_size;
-    const dataQuery = `
-      SELECT
-        t.id, t.title, t.description, t.created_at, t.updated_at, t.version,
-        t.total_objects, t.unique_objects, t.featured, t.download_count,
-        u.username as creator_display_name,
-        COALESCE(AVG(r.rating), 0) as average_rating,
-        COUNT(DISTINCT r.id) as rating_count,
-        COUNT(DISTINCT l.id) as like_count
-      FROM toyboxes t
-      LEFT JOIN users u ON t.creator_id = u.id
-      LEFT JOIN toybox_ratings r ON t.id = r.toybox_id
-      LEFT JOIN toybox_likes l ON t.id = l.toybox_id
-      WHERE ${whereClause}
-      GROUP BY t.id, u.username
-      ORDER BY ${orderBy}
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-    `;
+    console.log('Pagination: page', page, 'page_size', page_size, 'offset', offset);
 
-    queryParams.push(page_size, offset);
+    let supabaseQuery = supabase
+      .from('toyboxes')
+      .select(`
+        id, title, description, created_at, updated_at, version,
+        total_objects, unique_objects, featured, download_count,
+        users!inner(username)
+      `)
+      .eq('status', 3)
+      .order(sort_field, { ascending: sort_direction === 'asc' })
+      .range(offset, offset + page_size - 1);
 
-    const dataResult = await query(dataQuery, queryParams);
+    console.log('Supabase query configured');
+    const { data, error } = await supabaseQuery;
 
-    const items = dataResult.rows.map(row => ({
-      id: row.id,
-      name: row.title,
-      creator_display_name: row.creator_display_name,
-      downloads: { count: parseInt(row.download_count) },
-      likes: { count: parseInt(row.like_count) },
-      rating: parseFloat(row.average_rating),
-      created_at: row.created_at,
-      featured: row.featured,
+    if (error) {
+      console.log('❌ LIST TOYBOXES: Data query failed:', error);
+      throw error;
+    }
+
+    console.log('✅ LIST TOYBOXES: Data query succeeded, returned', data?.length || 0, 'toyboxes');
+
+    // Transform data to match expected format
+    const toyboxes = (data || []).map(toybox => ({
+      id: toybox.id,
+      title: toybox.title,
+      description: toybox.description,
+      created_at: toybox.created_at,
+      updated_at: toybox.updated_at,
+      version: toybox.version,
+      total_objects: toybox.total_objects,
+      unique_objects: toybox.unique_objects,
+      featured: toybox.featured,
+      download_count: toybox.download_count,
+      creator_display_name: toybox.users?.username || 'Unknown',
+      average_rating: 0, // TODO: Calculate ratings
+      rating_count: 0,   // TODO: Calculate rating counts
+      like_count: 0      // TODO: Calculate like counts
+    }));
+
+    console.log('📦 LIST TOYBOXES: Formatting response...');
+
+    const items = toyboxes.map(toybox => ({
+      id: toybox.id,
+      name: toybox.title,
+      creator_display_name: toybox.creator_display_name,
+      downloads: { count: toybox.download_count || 0 },
+      likes: { count: toybox.like_count || 0 },
+      rating: toybox.average_rating || 0,
+      created_at: toybox.created_at,
+      featured: toybox.featured,
       status: 'published'
     }));
+
+    console.log('✅ LIST TOYBOXES: Response formatted, sending', items.length, 'items');
 
     res.json({
       items,
