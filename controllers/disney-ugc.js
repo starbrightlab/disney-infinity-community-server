@@ -466,6 +466,71 @@ async function listPrivateToyboxes(req, res) {
   }
 }
 
+/**
+ * Update toybox (placeholder - needs implementation)
+ */
+async function updateToybox(req, res) {
+  try {
+    const { id } = req.params;
+
+    // Verify ownership
+    const { data: toybox } = await supabase
+      .from('toyboxes')
+      .select('creator_id')
+      .eq('id', id)
+      .single();
+
+    if (!toybox || toybox.creator_id !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    // Update logic here
+    res.json({ message: 'Update not yet implemented' });
+
+  } catch (err) {
+    winston.error('Update error:', err);
+    res.status(500).json({ error: 'Update failed' });
+  }
+}
+
+/**
+ * Delete toybox
+ */
+async function deleteToybox(req, res) {
+  try {
+    const { id } = req.params;
+
+    // Verify ownership
+    const { data: toybox } = await supabase
+      .from('toyboxes')
+      .select('creator_id')
+      .eq('id', id)
+      .single();
+
+    if (!toybox || toybox.creator_id !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    // Delete toybox
+    const { error } = await supabase
+      .from('toyboxes')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      winston.error('Delete error:', error);
+      return res.status(500).json({ error: 'Delete failed' });
+    }
+
+    winston.info(`Toybox deleted: ${id} by ${req.user.username}`);
+    res.json({ message: 'Toybox deleted successfully' });
+
+  } catch (err) {
+    winston.error('Delete error:', err);
+    res.status(500).json({ error: 'Delete failed' });
+  }
+}
+
 // Export controller functions
 module.exports = {
   listPublicToyboxes,
@@ -476,11 +541,11 @@ module.exports = {
   likeToybox,
   getObjectCounts,
   listPrivateToyboxes,
+  updateToybox,
+  deleteToybox,
   
-  // Re-export from original controller for methods that don't need reformatting
+  // Re-export from original controller for upload/download
   uploadToybox: require('./toybox').uploadToybox,
   downloadToybox: require('./toybox').downloadToybox,
-  downloadPrivateToybox: require('./toybox').downloadToybox, // Same logic, just checks ownership
-  updateToybox: require('./toybox').updateToybox,
-  deleteToybox: require('./toybox').deleteToybox
+  downloadPrivateToybox: require('./toybox').downloadToybox
 };
