@@ -70,19 +70,15 @@ router.get('/simple', async (req, res) => {
 
 // Test endpoint with NO middleware at all (temporary)
 router.get('/test', (req, res) => {
-  console.log('🧪 TEST ENDPOINT: Request received');
+  console.log('🧪 TEST ENDPOINT V2: Request received at', new Date().toISOString());
   console.log('Method:', req.method);
   console.log('Path:', req.path);
-  console.log('Query:', req.query);
-  console.log('Headers:', req.headers);
 
   res.json({
     success: true,
-    message: 'Test endpoint reached',
-    method: req.method,
-    path: req.path,
-    query: req.query,
-    timestamp: new Date().toISOString()
+    message: 'Test endpoint V2 reached',
+    timestamp: new Date().toISOString(),
+    deployed: true
   });
 });
 
