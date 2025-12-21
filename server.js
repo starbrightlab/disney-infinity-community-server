@@ -588,6 +588,10 @@ app.use('/api/v1/sync', rateLimiters.general, syncRoutes);
 app.use('/api/v1/analytics', rateLimiters.general, analyticsRoutes);
 
 // Test endpoints for debugging (remove after fixing login)
+app.get('/api/v1/test/ping', (req, res) => {
+  res.json({ status: 'ok', message: 'Debug endpoint working', timestamp: new Date().toISOString() });
+});
+
 app.post('/api/v1/test/login-query', async (req, res) => {
   try {
     const { username } = req.body;
