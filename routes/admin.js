@@ -9,6 +9,7 @@ const {
   optimizeDatabase
 } = require('../controllers/cleanup');
 const winston = require('winston');
+const monitoring = require('../services/monitoring');
 
 /**
  * Admin routes for moderation and management
@@ -313,5 +314,57 @@ router.get('/cleanup/stats', requireAdmin, getCleanupStats);
 router.post('/cleanup/run', requireAdmin, runCleanup);
 router.get('/database/health', requireAdmin, getDatabaseHealth);
 router.post('/database/optimize', requireAdmin, optimizeDatabase);
+
+// Monitoring and alerts (admin only)
+router.get('/alerts', requireAdmin, async (req, res) => {
+  try {
+    const alertSummary = monitoring.getAlertSummary();
+
+    res.json({
+      alerts: alertSummary,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    winston.error('Alerts fetch error:', err);
+    res.status(500).json({
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Failed to fetch alerts'
+      }
+    });
+  }
+});
+
+// Configure alert thresholds (admin only)
+router.put('/alerts/thresholds', requireAdmin, async (req, res) => {
+  try {
+    const { thresholds } = req.body;
+
+    if (!thresholds || typeof thresholds !== 'object') {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'Thresholds object required'
+        }
+      });
+    }
+
+    monitoring.setThresholds(thresholds);
+
+    res.json({
+      message: 'Alert thresholds updated successfully',
+      thresholds: monitoring.thresholds,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    winston.error('Thresholds update error:', err);
+    res.status(500).json({
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Failed to update thresholds'
+      }
+    });
+  }
+});
 
 module.exports = router;

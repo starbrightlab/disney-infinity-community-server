@@ -139,28 +139,38 @@ app.use((req, res, next) => {
 });
 
 // Health check endpoint
-app.get('/api/v1/health', (req, res) => {
+app.get('/api/v1/health', async (req, res) => {
   try {
     console.log('🏥 Health check requested');
 
-    // For now, return healthy status since core functionality works
-    // TODO: Improve monitoring service health calculations
-    const health = {
-      status: 'healthy',
-      uptime: Math.floor((Date.now() - monitoring.startTime) / 1000),
-      checks: {
-        database: { status: 'ok', query_count: 0, error_count: 0 },
-        memory: { status: 'ok', current_mb: 100 },
-        requests: { status: 'ok', total: 10, error_rate: 0 },
-        websocket: { status: 'ok', active_connections: 0 }
-      }
-    };
+    const health = await monitoring.getHealthStatus();
 
-    console.log('🏥 Health status: healthy (forced for now)');
+    // Determine overall status based on individual checks
+    let overallStatus = 'healthy';
+    let statusCode = 200;
+    let message = 'Disney Infinity Community Server is running!';
 
-    res.status(200).json({
-      status: health.status,
-      message: 'Disney Infinity Community Server is running!',
+    // Check if any critical systems are failing
+    const criticalChecks = ['database', 'memory'];
+    const hasCriticalFailure = criticalChecks.some(check =>
+      health.checks[check] && health.checks[check].status !== 'ok'
+    );
+
+    if (hasCriticalFailure) {
+      overallStatus = 'critical';
+      statusCode = 503;
+      message = 'Critical systems are experiencing issues';
+    } else if (health.checks.requests && health.checks.requests.status === 'warning') {
+      overallStatus = 'warning';
+      statusCode = 200;
+      message = 'Server is running with some performance warnings';
+    }
+
+    console.log(`🏥 Health status: ${overallStatus}`);
+
+    res.status(statusCode).json({
+      status: overallStatus,
+      message,
       version: '1.0.0',
       timestamp: new Date().toISOString(),
       environment: process.env.NODE_ENV || 'development',
@@ -168,12 +178,12 @@ app.get('/api/v1/health', (req, res) => {
       checks: health.checks
     });
   } catch (err) {
-    console.log('💥 Health check error:', err);
+    console.error('💥 Health check error:', err);
     res.status(503).json({
       status: 'critical',
       message: 'Health check failed',
-      error: err.message,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      error: err.message
     });
   }
 });
@@ -243,12 +253,12 @@ app.get('/api/v1/debug/test', (req, res) => {
 });
 
 // Health debug endpoint (temporary)
-app.get('/api/v1/debug/health', (req, res) => {
+app.get('/api/v1/debug/health', async (req, res) => {
   try {
     console.log('🔍 HEALTH DEBUG: Testing monitoring service...');
     const monitoring = require('./services/monitoring');
 
-    const health = monitoring.getHealthStatus();
+    const health = await monitoring.getHealthStatus();
     console.log('✅ HEALTH DEBUG: Health check result:', health);
 
     res.json({

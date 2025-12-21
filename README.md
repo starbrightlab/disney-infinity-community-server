@@ -54,7 +54,10 @@ curl http://localhost:3000/api/v1/health
 ## 📡 API Endpoints
 
 ### Health & Monitoring
-- `GET /api/v1/health` - Server health check with system status
+- `GET /api/v1/health` - Dynamic server health check with real-time system status
+- `GET /api/v1/debug/health` - Debug health endpoint with detailed metrics
+- `GET /api/v1/admin/alerts` - Admin-only alert summary and active alerts (requires admin auth)
+- `PUT /api/v1/admin/alerts/thresholds` - Configure alert thresholds (requires admin auth)
 - `GET /api/v1/info` - Complete server information and endpoint reference
 - `GET /api/v1/metrics` - Admin-only performance metrics (requires auth)
 - `GET /api/v1/monitoring/performance` - Real-time performance data
@@ -65,7 +68,7 @@ curl http://localhost:3000/api/v1/health
 - `POST /api/v1/auth/refresh` - Refresh JWT access token
 
 ### Toybox Management
-- `GET /api/v1/toybox` - List toyboxes with ratings and filters
+- `GET /api/v1/toybox` - List toyboxes with ratings, performance filters, and advanced search
 - `POST /api/v1/toybox` - Upload new toybox with metadata
 - `GET /api/v1/toybox/{id}` - Download toybox data
 - `GET /api/v1/toybox/{id}/screenshot` - Get toybox screenshot
@@ -116,6 +119,147 @@ curl http://localhost:3000/api/v1/health
 - `PUT /api/v1/admin/toybox/{id}/status` - Moderate toybox
 - `GET /api/v1/admin/cleanup/stats` - Cleanup statistics
 - `POST /api/v1/admin/cleanup/run` - Run maintenance cleanup
+
+## 🔧 API Specifications
+
+### Health Monitoring API
+
+#### GET /api/v1/health
+Returns real-time server health status with dynamic checks.
+
+**Response:**
+```json
+{
+  "status": "healthy|warning|critical",
+  "message": "System status description",
+  "version": "1.0.0",
+  "timestamp": "2024-12-21T10:30:00.000Z",
+  "uptime": 3600,
+  "checks": {
+    "database": {
+      "status": "ok",
+      "response_time": 15,
+      "query_count": 1500,
+      "error_count": 0
+    },
+    "memory": {
+      "status": "ok",
+      "current_mb": 120,
+      "peak_mb": 180,
+      "average_mb": 95
+    },
+    "requests": {
+      "status": "ok",
+      "total": 1500,
+      "error_rate": 0.5,
+      "average_response_time": 45
+    },
+    "websocket": {
+      "status": "ok",
+      "active_connections": 25,
+      "total_messages": 500,
+      "errors": 0
+    }
+  }
+}
+```
+
+#### GET /api/v1/admin/alerts (Admin Only)
+Returns current alert status and history.
+
+**Response:**
+```json
+{
+  "alerts": {
+    "active_count": 2,
+    "new_count": 0,
+    "resolved_count": 1,
+    "active_alerts": [
+      {
+        "type": "warning",
+        "message": "High memory usage: 650MB",
+        "metric": "memory_usage",
+        "value": 650,
+        "threshold": 500
+      }
+    ],
+    "recent_alerts": [...]
+  },
+  "timestamp": "2024-12-21T10:30:00.000Z"
+}
+```
+
+#### PUT /api/v1/admin/alerts/thresholds (Admin Only)
+Configure alert thresholds.
+
+**Request Body:**
+```json
+{
+  "error_rate_warning": 15,
+  "error_rate_critical": 50,
+  "response_time_warning": 1000,
+  "response_time_critical": 5000,
+  "memory_warning": 600,
+  "memory_critical": 800
+}
+```
+
+### Performance Filtering API
+
+#### GET /api/v1/toybox
+List toyboxes with advanced filtering including platform-specific performance metrics.
+
+**Query Parameters:**
+- `minimum_performance` (0-100) - Filter by default platform performance (legacy)
+- `platform` (default|pc|playstation|xbox|switch) - Specify platform for performance filtering
+- `performance_threshold` (0-100) - Filter toyboxes where ANY platform meets the threshold
+- `creators` - Comma-separated list of creator usernames
+- `igps` - Comma-separated list of Infinity Game Piece IDs
+- `abilities` - Comma-separated list of ability IDs
+- `genres` - Comma-separated list of genre IDs
+- `versions` - Comma-separated list of game versions
+- `featured` (true) - Show only featured toyboxes
+- `search` - Full-text search query
+- `page` (default: 1) - Page number
+- `page_size` (default: 20, max: 100) - Results per page
+- `sort_field` (created_at|updated_at|download_count|title) - Sort field
+- `sort_direction` (asc|desc) - Sort direction
+
+**Examples:**
+```
+GET /api/v1/toybox?platform=pc&minimum_performance=85
+GET /api/v1/toybox?performance_threshold=90
+GET /api/v1/toybox?creators=user1,user2&featured=true
+GET /api/v1/toybox?search=castle&sort_field=download_count&sort_direction=desc
+```
+
+**Response:**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "title": "Epic Castle",
+      "description": "A magnificent castle toybox",
+      "platform_performance": {
+        "default": 85,
+        "pc": 90,
+        "playstation": 82,
+        "xbox": 87,
+        "switch": 75
+      },
+      "creator_username": "user1",
+      "average_rating": 4.5,
+      "download_count": 1250,
+      "created_at": "2024-12-21T08:00:00.000Z"
+    }
+  ],
+  "total": 150,
+  "page": 1,
+  "page_size": 20,
+  "has_more": true
+}
+```
 
 ## Development
 

@@ -70,6 +70,66 @@ describe('Toybox Endpoints', () => {
       expect(response.body).toHaveProperty('page', 2);
       expect(response.body).toHaveProperty('page_size', 10);
     });
+
+    test('should filter by minimum performance (legacy)', async () => {
+      const response = await request(app)
+        .get('/api/v1/toybox?minimum_performance=80')
+        .expect('Content-Type', /json/)
+        .expect(200);
+
+      expect(response.body).toHaveProperty('items');
+      expect(Array.isArray(response.body.items)).toBe(true);
+    });
+
+    test('should filter by platform-specific performance', async () => {
+      const response = await request(app)
+        .get('/api/v1/toybox?platform=pc&minimum_performance=85')
+        .expect('Content-Type', /json/)
+        .expect(200);
+
+      expect(response.body).toHaveProperty('items');
+      expect(Array.isArray(response.body.items)).toBe(true);
+    });
+
+    test('should filter by performance threshold (any platform)', async () => {
+      const response = await request(app)
+        .get('/api/v1/toybox?performance_threshold=90')
+        .expect('Content-Type', /json/)
+        .expect(200);
+
+      expect(response.body).toHaveProperty('items');
+      expect(Array.isArray(response.body.items)).toBe(true);
+    });
+
+    test('should validate platform parameter', async () => {
+      const response = await request(app)
+        .get('/api/v1/toybox?platform=invalid&minimum_performance=80')
+        .expect('Content-Type', /json/)
+        .expect(400);
+
+      expect(response.body.error).toHaveProperty('code', 'INVALID_REQUEST');
+      expect(response.body.error.details[0].msg).toContain('Invalid platform');
+    });
+
+    test('should validate minimum_performance parameter range', async () => {
+      const response = await request(app)
+        .get('/api/v1/toybox?minimum_performance=150')
+        .expect('Content-Type', /json/)
+        .expect(400);
+
+      expect(response.body.error).toHaveProperty('code', 'INVALID_REQUEST');
+      expect(response.body.error.details[0].msg).toContain('Minimum performance must be 0-100');
+    });
+
+    test('should validate performance_threshold parameter range', async () => {
+      const response = await request(app)
+        .get('/api/v1/toybox?performance_threshold=-5')
+        .expect('Content-Type', /json/)
+        .expect(400);
+
+      expect(response.body.error).toHaveProperty('code', 'INVALID_REQUEST');
+      expect(response.body.error.details[0].msg).toContain('Performance threshold must be 0-100');
+    });
   });
 
   describe('POST /api/v1/toybox', () => {

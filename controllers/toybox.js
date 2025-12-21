@@ -378,7 +378,10 @@ const listValidation = [
   queryParam('page').optional().isInt({ min: 1 }).withMessage('Page must be positive integer'),
   queryParam('page_size').optional().isInt({ min: 1, max: 100 }).withMessage('Page size must be 1-100'),
   queryParam('sort_field').optional().isIn(['created_at', 'updated_at', 'download_count', 'title']).withMessage('Invalid sort field'),
-  queryParam('sort_direction').optional().isIn(['asc', 'desc']).withMessage('Sort direction must be asc or desc')
+  queryParam('sort_direction').optional().isIn(['asc', 'desc']).withMessage('Sort direction must be asc or desc'),
+  queryParam('minimum_performance').optional().isInt({ min: 0, max: 100 }).withMessage('Minimum performance must be 0-100'),
+  queryParam('platform').optional().isIn(['default', 'pc', 'playstation', 'xbox', 'switch']).withMessage('Invalid platform'),
+  queryParam('performance_threshold').optional().isInt({ min: 0, max: 100 }).withMessage('Performance threshold must be 0-100')
 ];
 
 /**
@@ -415,6 +418,8 @@ const listToyboxes = async (req, res) => {
       versions,
       featured,
       minimum_performance,
+      platform,
+      performance_threshold,
       search
     } = req.query;
 
@@ -476,12 +481,42 @@ const listToyboxes = async (req, res) => {
       whereConditions.push('t.featured = true');
     }
 
-    // Minimum performance filter
+    // Performance filters
     if (minimum_performance) {
+      // Legacy support: minimum_performance filters by 'default' platform
       const minPerf = parseInt(minimum_performance);
       if (!isNaN(minPerf)) {
         whereConditions.push(`(t.platform_performance->>'default')::int >= $${paramIndex}`);
         queryParams.push(minPerf);
+        paramIndex++;
+      }
+    }
+
+    if (platform && minimum_performance) {
+      // Platform-specific performance filter: platform=pc&minimum_performance=85
+      const platformName = platform.toLowerCase();
+      const minPerf = parseInt(minimum_performance);
+      if (!isNaN(minPerf) && ['default', 'pc', 'playstation', 'xbox', 'switch'].includes(platformName)) {
+        whereConditions.push(`(t.platform_performance->>'${platformName}')::int >= $${paramIndex}`);
+        queryParams.push(minPerf);
+        paramIndex++;
+      }
+    }
+
+    if (performance_threshold) {
+      // Any platform threshold filter: performance_threshold=90
+      const threshold = parseInt(performance_threshold);
+      if (!isNaN(threshold)) {
+        // Check if any platform meets or exceeds the threshold
+        // The GIN index on platform_performance will optimize these JSONB path queries
+        whereConditions.push(`
+          (t.platform_performance->>'default')::int >= $${paramIndex} OR
+          (t.platform_performance->>'pc')::int >= $${paramIndex} OR
+          (t.platform_performance->>'playstation')::int >= $${paramIndex} OR
+          (t.platform_performance->>'xbox')::int >= $${paramIndex} OR
+          (t.platform_performance->>'switch')::int >= $${paramIndex}
+        `);
+        queryParams.push(threshold);
         paramIndex++;
       }
     }

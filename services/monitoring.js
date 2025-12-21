@@ -1,4 +1,5 @@
 const winston = require('winston');
+const { testConnection } = require('../config/database');
 
 // Performance monitoring service
 class MonitoringService {
@@ -34,6 +35,25 @@ class MonitoringService {
 
     this.startTime = Date.now();
     this.lastReset = Date.now();
+
+    // Configurable alert thresholds
+    this.thresholds = {
+      error_rate_critical: 50,     // 50% error rate = critical
+      error_rate_warning: 10,      // 10% error rate = warning
+      response_time_critical: 5000, // 5 seconds = critical
+      response_time_warning: 1000,  // 1 second = warning
+      db_query_time_warning: 50,    // 50ms average = warning
+      memory_critical: 800,         // 800MB = critical
+      memory_warning: 500,          // 500MB = warning
+      db_errors_critical: 10         // 10+ DB errors = critical
+    };
+
+    // Alert state tracking
+    this.alerts = {
+      active: new Map(), // Current active alerts
+      history: [],       // Alert history
+      lastChecked: Date.now()
+    };
   }
 
   // Request monitoring
@@ -198,39 +218,102 @@ class MonitoringService {
       },
       health: {
         status: errorRate < 20 ? 'healthy' : errorRate < 50 ? 'warning' : 'critical',
-        database: this.metrics.database.errors < 50,
+        database: this.metrics.database.errors < 50, // Keep for backward compatibility
         memory: this.recordMemoryUsage() < 800 // Less than 800MB
       }
     };
   }
 
+  // Database health check
+  async checkDatabaseHealth() {
+    try {
+      const startTime = Date.now();
+      const isConnected = await testConnection();
+      const responseTime = Date.now() - startTime;
+
+      if (isConnected) {
+        return {
+          status: 'ok',
+          response_time: responseTime,
+          query_count: this.metrics.database.queryCount,
+          error_count: this.metrics.database.errors
+        };
+      } else {
+        return {
+          status: 'error',
+          response_time: responseTime,
+          query_count: this.metrics.database.queryCount,
+          error_count: this.metrics.database.errors,
+          message: 'Database connection failed'
+        };
+      }
+    } catch (err) {
+      winston.error('Database health check failed:', err);
+      return {
+        status: 'error',
+        response_time: 0,
+        query_count: this.metrics.database.queryCount,
+        error_count: this.metrics.database.errors + 1,
+        message: err.message
+      };
+    }
+  }
+
   // Health check
-  getHealthStatus() {
+  async getHealthStatus() {
     const metrics = this.getMetrics();
+    const dbHealth = await this.checkDatabaseHealth();
+
+    // Determine overall status based on checks
+    let overallStatus = 'healthy';
+    let statusMessage = 'All systems operational';
+
+    // Critical failures
+    if (dbHealth.status !== 'ok') {
+      overallStatus = 'critical';
+      statusMessage = 'Database connection failed';
+    } else if (metrics.memory.currentUsage > 800) {
+      overallStatus = 'critical';
+      statusMessage = 'Memory usage critically high';
+    } else if (metrics.requests.errorRate > 50) {
+      overallStatus = 'critical';
+      statusMessage = 'Error rate critically high';
+    } else if (metrics.requests.averageResponseTime > 5000) {
+      overallStatus = 'critical';
+      statusMessage = 'Response times critically slow';
+    }
+    // Warnings
+    else if (metrics.memory.currentUsage > 500 ||
+             metrics.requests.errorRate > 10 ||
+             metrics.requests.averageResponseTime > 1000) {
+      overallStatus = 'warning';
+      statusMessage = 'Some systems showing warnings';
+    }
 
     return {
-      status: metrics.health.status,
+      status: overallStatus,
+      message: statusMessage,
       timestamp: metrics.timestamp,
       uptime: Math.round(metrics.uptime / 1000), // seconds
       checks: {
-        database: {
-          status: metrics.health.database ? 'ok' : 'error',
-          query_count: metrics.database.queryCount,
-          error_count: metrics.database.errors
-        },
+        database: dbHealth,
         memory: {
-          status: metrics.health.memory ? 'ok' : 'warning',
+          status: metrics.memory.currentUsage > 500 ? 'warning' : 'ok',
           current_mb: metrics.memory.currentUsage,
-          peak_mb: metrics.memory.peakUsage
+          peak_mb: metrics.memory.peakUsage,
+          average_mb: metrics.memory.averageUsage
         },
         requests: {
-          status: metrics.requests.errorRate < 10 ? 'ok' : 'warning',
+          status: metrics.requests.errorRate < 10 ? 'ok' : (metrics.requests.errorRate < 50 ? 'warning' : 'error'),
           total: metrics.requests.total,
-          error_rate: metrics.requests.errorRate
+          error_rate: metrics.requests.errorRate,
+          average_response_time: metrics.requests.averageResponseTime
         },
         websocket: {
           status: 'ok', // WebSocket is always "ok" if server is running
-          active_connections: metrics.websocket.activeConnections
+          active_connections: metrics.websocket.activeConnections,
+          total_messages: metrics.websocket.messages,
+          errors: metrics.websocket.errors
         }
       }
     };
@@ -269,44 +352,180 @@ class MonitoringService {
     this.lastReset = Date.now();
   }
 
-  // Performance alert thresholds
+  // Configure alert thresholds
+  setThresholds(newThresholds) {
+    this.thresholds = { ...this.thresholds, ...newThresholds };
+    winston.info('Alert thresholds updated:', this.thresholds);
+  }
+
+  // Performance alert thresholds with state management
   checkThresholds() {
     const metrics = this.getMetrics();
-    const alerts = [];
+    const currentTime = Date.now();
+    const newAlerts = [];
+    const activeAlerts = new Map(this.alerts.active);
 
-    if (metrics.requests.averageResponseTime > 1000) { // 1 second
-      alerts.push({
+    // Check response time
+    const responseTimeAlert = this.checkMetricThreshold(
+      'response_time',
+      metrics.requests.averageResponseTime,
+      this.thresholds.response_time_warning,
+      this.thresholds.response_time_critical,
+      `High average response time: ${metrics.requests.averageResponseTime}ms`
+    );
+
+    // Check error rate
+    const errorRateAlert = this.checkMetricThreshold(
+      'error_rate',
+      metrics.requests.errorRate,
+      this.thresholds.error_rate_warning,
+      this.thresholds.error_rate_critical,
+      `High error rate: ${metrics.requests.errorRate}%`
+    );
+
+    // Check database query time
+    const dbQueryAlert = this.checkMetricThreshold(
+      'db_query_time',
+      metrics.database.averageQueryTime,
+      this.thresholds.db_query_time_warning,
+      null, // No critical threshold for DB query time
+      `Slow database queries: ${metrics.database.averageQueryTime}ms average`
+    );
+
+    // Check memory usage
+    const memoryAlert = this.checkMetricThreshold(
+      'memory_usage',
+      metrics.memory.currentUsage,
+      this.thresholds.memory_warning,
+      this.thresholds.memory_critical,
+      `High memory usage: ${metrics.memory.currentUsage}MB`
+    );
+
+    // Check database errors
+    const dbErrorAlert = this.checkMetricThreshold(
+      'db_errors',
+      metrics.database.errors,
+      null,
+      this.thresholds.db_errors_critical,
+      `High database error count: ${metrics.database.errors} errors`
+    );
+
+    // Process alerts
+    [responseTimeAlert, errorRateAlert, dbQueryAlert, memoryAlert, dbErrorAlert]
+      .filter(alert => alert)
+      .forEach(alert => {
+        const alertKey = `${alert.metric}_${alert.type}`;
+
+        // If alert is new or escalated, add to new alerts
+        const existingAlert = activeAlerts.get(alertKey);
+        if (!existingAlert || existingAlert.type !== alert.type) {
+          newAlerts.push(alert);
+          activeAlerts.set(alertKey, { ...alert, firstSeen: currentTime });
+        }
+      });
+
+    // Check for resolved alerts
+    const resolvedAlerts = [];
+    for (const [key, alert] of activeAlerts.entries()) {
+      if (!this.isAlertStillActive(key, metrics)) {
+        resolvedAlerts.push({
+          ...alert,
+          resolved: true,
+          resolvedAt: currentTime,
+          duration: currentTime - alert.firstSeen
+        });
+        activeAlerts.delete(key);
+      }
+    }
+
+    // Update alert state
+    this.alerts.active = activeAlerts;
+    this.alerts.lastChecked = currentTime;
+
+    // Add to history
+    newAlerts.forEach(alert => {
+      this.alerts.history.push({
+        ...alert,
+        timestamp: currentTime
+      });
+    });
+
+    resolvedAlerts.forEach(alert => {
+      this.alerts.history.push({
+        ...alert,
+        timestamp: currentTime
+      });
+    });
+
+    // Keep history manageable (last 1000 alerts)
+    if (this.alerts.history.length > 1000) {
+      this.alerts.history = this.alerts.history.slice(-1000);
+    }
+
+    return {
+      new: newAlerts,
+      resolved: resolvedAlerts,
+      active: Array.from(activeAlerts.values())
+    };
+  }
+
+  // Helper method to check if a metric exceeds thresholds
+  checkMetricThreshold(metricName, value, warningThreshold, criticalThreshold, message) {
+    if (criticalThreshold !== null && value >= criticalThreshold) {
+      return {
+        type: 'critical',
+        message: `${message} (CRITICAL)`,
+        metric: metricName,
+        value: value,
+        threshold: criticalThreshold
+      };
+    } else if (warningThreshold !== null && value >= warningThreshold) {
+      return {
         type: 'warning',
-        message: `High average response time: ${metrics.requests.averageResponseTime}ms`,
-        metric: 'response_time'
-      });
+        message: `${message} (WARNING)`,
+        metric: metricName,
+        value: value,
+        threshold: warningThreshold
+      };
     }
+    return null;
+  }
 
-    if (metrics.requests.errorRate > 10) {
-      alerts.push({
-        type: 'error',
-        message: `High error rate: ${metrics.requests.errorRate}%`,
-        metric: 'error_rate'
-      });
+  // Helper method to check if an alert is still active
+  isAlertStillActive(alertKey, metrics) {
+    const parts = alertKey.split('_');
+    const metric = parts[0];
+    const type = parts[1];
+
+    switch (metric) {
+      case 'response_time':
+        return (type === 'critical' && metrics.requests.averageResponseTime >= this.thresholds.response_time_critical) ||
+               (type === 'warning' && metrics.requests.averageResponseTime >= this.thresholds.response_time_warning);
+      case 'error_rate':
+        return (type === 'critical' && metrics.requests.errorRate >= this.thresholds.error_rate_critical) ||
+               (type === 'warning' && metrics.requests.errorRate >= this.thresholds.error_rate_warning);
+      case 'db_query_time':
+        return metrics.database.averageQueryTime >= this.thresholds.db_query_time_warning;
+      case 'memory_usage':
+        return (type === 'critical' && metrics.memory.currentUsage >= this.thresholds.memory_critical) ||
+               (type === 'warning' && metrics.memory.currentUsage >= this.thresholds.memory_warning);
+      case 'db_errors':
+        return metrics.database.errors >= this.thresholds.db_errors_critical;
+      default:
+        return false;
     }
+  }
 
-    if (metrics.database.averageQueryTime > 50) { // 50ms
-      alerts.push({
-        type: 'warning',
-        message: `Slow database queries: ${metrics.database.averageQueryTime}ms average`,
-        metric: 'db_query_time'
-      });
-    }
-
-    if (metrics.memory.currentUsage > 400) { // 400MB
-      alerts.push({
-        type: 'warning',
-        message: `High memory usage: ${metrics.memory.currentUsage}MB`,
-        metric: 'memory_usage'
-      });
-    }
-
-    return alerts;
+  // Get alert summary
+  getAlertSummary() {
+    const alerts = this.checkThresholds();
+    return {
+      active_count: alerts.active.length,
+      new_count: alerts.new.length,
+      resolved_count: alerts.resolved.length,
+      active_alerts: alerts.active,
+      recent_alerts: this.alerts.history.slice(-10) // Last 10 alerts
+    };
   }
 }
 
