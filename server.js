@@ -140,17 +140,29 @@ app.use((req, res, next) => {
 
 // Health check endpoint
 app.get('/api/v1/health', (req, res) => {
-  const health = monitoring.getHealthStatus();
+  try {
+    console.log('🏥 Health check requested');
+    const health = monitoring.getHealthStatus();
+    console.log('🏥 Health status:', health);
 
-  res.status(health.status === 'critical' ? 503 : 200).json({
-    status: health.status,
-    message: health.status === 'healthy' ? 'Disney Infinity Community Server is running!' : 'Server experiencing issues',
-    version: '1.0.0',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    uptime: health.uptime,
-    checks: health.checks
-  });
+    res.status(health.status === 'critical' ? 503 : 200).json({
+      status: health.status,
+      message: health.status === 'healthy' ? 'Disney Infinity Community Server is running!' : 'Server experiencing issues',
+      version: '1.0.0',
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+      uptime: health.uptime,
+      checks: health.checks
+    });
+  } catch (err) {
+    console.log('💥 Health check error:', err);
+    res.status(503).json({
+      status: 'critical',
+      message: 'Health check failed',
+      error: err.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // Detailed metrics endpoint (admin only)
