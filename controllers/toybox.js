@@ -514,7 +514,9 @@ const listToyboxes = async (req, res) => {
       .select(`
         id, title, description, created_at, updated_at, version,
         total_objects, unique_objects, featured, download_count,
-        users!inner(username)
+        users!inner(username),
+        toybox_ratings(rating),
+        toybox_likes(id)
       `, { count: 'exact' })
       .eq('status', 3);
 
@@ -633,22 +635,33 @@ const listToyboxes = async (req, res) => {
     const total = count || 0;
 
     // Transform data to match expected format
-    const toyboxes = (data || []).map(toybox => ({
-      id: toybox.id,
-      title: toybox.title,
-      description: toybox.description,
-      created_at: toybox.created_at,
-      updated_at: toybox.updated_at,
-      version: toybox.version,
-      total_objects: toybox.total_objects,
-      unique_objects: toybox.unique_objects,
-      featured: toybox.featured,
-      download_count: toybox.download_count,
-      creator_display_name: toybox.users?.username || 'Unknown',
-      average_rating: 0,
-      rating_count: 0,
-      like_count: 0
-    }));
+    const toyboxes = (data || []).map(toybox => {
+      // Calculate ratings from joined data
+      const ratings = toybox.toybox_ratings || [];
+      const averageRating = ratings.length > 0
+        ? ratings.reduce((sum, r) => sum + r.rating, 0) / ratings.length
+        : 0;
+
+      // Count likes from joined data
+      const likes = toybox.toybox_likes || [];
+
+      return {
+        id: toybox.id,
+        title: toybox.title,
+        description: toybox.description,
+        created_at: toybox.created_at,
+        updated_at: toybox.updated_at,
+        version: toybox.version,
+        total_objects: toybox.total_objects,
+        unique_objects: toybox.unique_objects,
+        featured: toybox.featured,
+        download_count: toybox.download_count,
+        creator_display_name: toybox.users?.username || 'Unknown',
+        average_rating: Math.round(averageRating * 10) / 10, // Round to 1 decimal
+        rating_count: ratings.length,
+        like_count: likes.length
+      };
+    });
 
     console.log('📦 LIST TOYBOXES: Formatting response...');
 
