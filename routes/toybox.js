@@ -182,12 +182,12 @@ router.get('/:id/screenshot', downloadValidation, async (req, res) => {
     }
 
     // Download from Supabase storage
-    const { data, error } = await supabase.storage
+    const { data, error: storageError } = await supabase.storage
       .from(process.env.SUPABASE_BUCKET || 'toyboxes')
       .download(toybox.screenshot);
 
-    if (error) {
-      winston.error('Screenshot download error:', error);
+    if (storageError) {
+      winston.error('Screenshot download error:', storageError);
       return res.status(500).json({
         error: {
           code: 'SERVER_ERROR',
@@ -313,7 +313,7 @@ router.post('/:id/rate', authenticateToken, downloadValidation, async (req, res)
 // Like/unlike toybox
 router.post('/:id/like', authenticateToken, downloadValidation, async (req, res) => {
   try {
-    const { query } = require('../config/database');
+    const { supabase } = require('../config/database');
     const winston = require('winston');
 
     const { id } = req.params;
@@ -429,7 +429,7 @@ router.get('/trending', cacheMiddleware(900, (req) => {
   return `GET:/api/v1/toybox/trending?genre=${genre || ''}&limit=${limit || 20}`;
 }), async (req, res) => {
   try {
-    const { query } = require('../config/database');
+    const { supabase } = require('../config/database');
     const { genre, limit = 20 } = req.query;
 
     // Trending algorithm: weighted score based on downloads, ratings, and recency
