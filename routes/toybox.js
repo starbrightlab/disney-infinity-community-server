@@ -38,6 +38,25 @@ const upload = multer({
   }
 });
 
+// Simple toybox list for debugging (temporary)
+router.get('/simple', async (req, res) => {
+  try {
+    const { supabase } = require('../config/database');
+    const { data, error } = await supabase
+      .from('toyboxes')
+      .select('id,name,created_at')
+      .limit(5);
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ toyboxes: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // List toyboxes (public) - cached for 5 minutes
 router.get('/', listValidation, optionalAuth, cacheMiddleware(300, (req) => {
   // Create cache key based on query parameters

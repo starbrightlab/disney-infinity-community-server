@@ -41,3 +41,4 @@ try {
     Write-Host "Error running git command: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
+

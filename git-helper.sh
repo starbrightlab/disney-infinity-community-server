@@ -35,3 +35,4 @@ COMMAND="$1"
 shift
 
 run_git "$COMMAND" "$@"
+

@@ -150,3 +150,4 @@ If you encounter git issues:
 2. Use the helper scripts when possible
 3. Always use full paths in PowerShell
 4. Test commands individually before combining them
+
