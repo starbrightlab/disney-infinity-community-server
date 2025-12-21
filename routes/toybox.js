@@ -69,9 +69,27 @@ router.get('/simple', async (req, res) => {
 });
 
 // Test endpoint with NO middleware at all (temporary)
-router.get('/test', async (req, res) => {
+router.get('/test', (req, res) => {
+  console.log('🧪 TEST ENDPOINT: Request received');
+  console.log('Method:', req.method);
+  console.log('Path:', req.path);
+  console.log('Query:', req.query);
+  console.log('Headers:', req.headers);
+
+  res.json({
+    success: true,
+    message: 'Test endpoint reached',
+    method: req.method,
+    path: req.path,
+    query: req.query,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Query test endpoint (temporary)
+router.get('/query', async (req, res) => {
   try {
-    console.log('🧪 TEST ENDPOINT: No middleware, direct query');
+    console.log('🔍 QUERY ENDPOINT: Testing database query');
     const { supabase } = require('../config/database');
 
     const { data, error } = await supabase
@@ -81,14 +99,14 @@ router.get('/test', async (req, res) => {
       .limit(5);
 
     if (error) {
-      console.log('❌ Test query error:', error);
+      console.log('❌ Query error:', error);
       return res.status(500).json({ error: error.message });
     }
 
-    console.log('✅ Test query success:', data?.length || 0, 'results');
+    console.log('✅ Query success:', data?.length || 0, 'results');
     res.json({ success: true, toyboxes: data });
   } catch (err) {
-    console.log('💥 Test endpoint exception:', err);
+    console.log('💥 Query exception:', err);
     res.status(500).json({ error: err.message });
   }
 });
