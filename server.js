@@ -93,6 +93,17 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use((req, res, next) => {
   const startTime = Date.now();
 
+  // Enhanced request logging for debugging
+  console.log(`📨 ${req.method} ${req.path} - ${new Date().toISOString()}`);
+  if (req.path.startsWith('/api/v1/') && req.path !== '/api/v1/health') {
+    console.log(`🔍 REQUEST DEBUG: ${req.method} ${req.path}`, {
+      headers: req.headers.authorization ? { ...req.headers, authorization: '[REDACTED]' } : req.headers,
+      query: req.query,
+      body: req.method !== 'GET' ? req.body : undefined,
+      ip: req.ip
+    });
+  }
+
   // Log request
   logger.info(`${req.method} ${req.path}`, {
     ip: req.ip,
@@ -101,10 +112,18 @@ app.use((req, res, next) => {
     body: req.method !== 'GET' ? req.body : undefined
   });
 
-  // Monitor response
+  // Monitor response with enhanced error logging
   res.on('finish', () => {
     const responseTime = Date.now() - startTime;
     monitoring.recordRequest(req, res, responseTime);
+
+    // Enhanced response logging for debugging
+    if (req.path.startsWith('/api/v1/') && req.path !== '/api/v1/health') {
+      console.log(`📤 RESPONSE: ${req.method} ${req.path} - ${res.statusCode} (${responseTime}ms)`);
+      if (res.statusCode >= 400) {
+        console.log(`❌ ERROR RESPONSE: ${req.method} ${req.path} - Status: ${res.statusCode}`);
+      }
+    }
 
     // Log slow requests
     if (responseTime > 1000) {
@@ -144,6 +163,48 @@ app.get('/api/v1/metrics', require('./middleware/auth').requireAdmin, (req, res)
     alerts,
     timestamp: new Date().toISOString()
   });
+});
+
+// Debug endpoint for testing Supabase connectivity (temporary)
+app.get('/api/v1/debug/supabase', async (req, res) => {
+  try {
+    console.log('🔧 DEBUG ENDPOINT: Testing Supabase connection');
+    const { supabase } = require('./config/database');
+
+    // Test basic select
+    const { data, error, count } = await supabase
+      .from('users')
+      .select('id,username', { count: 'exact' })
+      .limit(1);
+
+    if (error) {
+      console.log('❌ DEBUG ENDPOINT: Supabase error:', error);
+      return res.status(500).json({
+        status: 'error',
+        message: 'Supabase query failed',
+        error: error.message,
+        code: error.code,
+        details: error.details
+      });
+    }
+
+    console.log('✅ DEBUG ENDPOINT: Supabase query successful');
+    res.json({
+      status: 'success',
+      message: 'Supabase connection working',
+      data: data,
+      count: count,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.log('💥 DEBUG ENDPOINT: Unexpected error:', err);
+    res.status(500).json({
+      status: 'error',
+      message: 'Unexpected error in debug endpoint',
+      error: err.message,
+      stack: err.stack
+    });
+  }
 });
 
 // Performance monitoring endpoint
@@ -352,6 +413,54 @@ const monitoring = require('./services/monitoring');
 // Import Socket.io handlers
 const { initializeSocketServer } = require('./socket');
 
+// Enhanced environment variable logging for debugging
+console.log('🔍 PRODUCTION DEBUG: Environment Variables Check');
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('SUPABASE_URL present:', !!process.env.SUPABASE_URL);
+console.log('SUPABASE_URL value:', process.env.SUPABASE_URL ? process.env.SUPABASE_URL.substring(0, 30) + '...' : 'NOT SET');
+console.log('SUPABASE_SERVICE_ROLE_KEY present:', !!process.env.SUPABASE_SERVICE_ROLE_KEY);
+console.log('SUPABASE_SERVICE_ROLE_KEY length:', process.env.SUPABASE_SERVICE_ROLE_KEY?.length || 0);
+console.log('SUPABASE_SERVICE_KEY present:', !!process.env.SUPABASE_SERVICE_KEY);
+console.log('SUPABASE_SERVICE_KEY length:', process.env.SUPABASE_SERVICE_KEY?.length || 0);
+console.log('SUPABASE_ANON_KEY present:', !!process.env.SUPABASE_ANON_KEY);
+console.log('JWT_SECRET present:', !!process.env.JWT_SECRET);
+console.log('ALLOWED_ORIGINS:', process.env.ALLOWED_ORIGINS);
+console.log('PORT:', process.env.PORT);
+
+// Test Supabase client initialization directly
+console.log('🔧 SUPABASE CLIENT DEBUG:');
+try {
+  const { createClient } = require('@supabase/supabase-js');
+  const testClient = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    }
+  );
+  console.log('✅ Supabase client created successfully');
+
+  // Test basic connection
+  testClient.from('users').select('count', { count: 'exact', head: true })
+    .then(result => {
+      console.log('✅ Supabase connection test result:', result);
+      if (result.error) {
+        console.log('❌ Supabase connection error:', result.error);
+      } else {
+        console.log('🎉 Supabase connection successful! Count:', result.count);
+      }
+    })
+    .catch(err => {
+      console.log('❌ Supabase connection test failed:', err.message);
+      console.log('Full error:', err);
+    });
+} catch (initError) {
+  console.log('❌ Failed to create Supabase client:', initError.message);
+}
+
 // Test database connection on startup
 const { testConnection } = require('./config/database');
 testConnection().then(connected => {
@@ -385,6 +494,7 @@ testConnection().then(connected => {
     logger.info('Memory monitoring started');
   } else {
     logger.error('Failed to connect to database');
+    console.log('💥 DATABASE CONNECTION FAILED - CHECK SUPABASE CONFIGURATION');
     process.exit(1);
   }
 });

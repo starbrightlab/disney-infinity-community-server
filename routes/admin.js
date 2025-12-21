@@ -179,10 +179,11 @@ router.delete('/toybox/:id', requireAdmin, async (req, res) => {
     await query('DELETE FROM toyboxes WHERE id = $1', [id]);
 
     // Clean up files from Supabase (skip in test environment)
-    if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+    if (process.env.SUPABASE_URL && serviceKey) {
       const supabase = createClient(
         process.env.SUPABASE_URL,
-        process.env.SUPABASE_SERVICE_ROLE_KEY
+        serviceKey
       );
 
       const filesToDelete = [];

@@ -9,7 +9,7 @@ const winston = require('winston');
 // Create Supabase client
 const supabase = createClient(
   process.env.SUPABASE_URL || 'https://umimlfbroonvypoxjfze.supabase.co',
-  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY,
   {
     auth: {
       autoRefreshToken: false,
