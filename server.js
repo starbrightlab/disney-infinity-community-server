@@ -655,6 +655,39 @@ app.post('/api/v1/test/login-query', async (req, res) => {
   }
 });
 
+app.post('/api/v1/test/user-insert', async (req, res) => {
+  try {
+    const { username, email } = req.body;
+    console.log('🧪 TEST: Inserting user:', { username, email });
+
+    const { data: user, error } = await supabase
+      .from('users')
+      .insert([{
+        username: username,
+        email: email,
+        password_hash: 'test_hash',
+        profile_data: { test: true }
+      }])
+      .select('id, username, email')
+      .single();
+
+    console.log('🧪 INSERT RESULT:', { success: !error, user, error: error?.message });
+
+    res.json({
+      success: !error,
+      user: user,
+      error: error?.message
+    });
+  } catch (err) {
+    console.error('🧪 INSERT ERROR:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      stack: err.stack
+    });
+  }
+});
+
 app.post('/api/v1/test/password-check', async (req, res) => {
   try {
     const { password, hash } = req.body;
