@@ -217,6 +217,31 @@ app.get('/api/v1/debug/test', (req, res) => {
   });
 });
 
+// Health debug endpoint (temporary)
+app.get('/api/v1/debug/health', (req, res) => {
+  try {
+    console.log('🔍 HEALTH DEBUG: Testing monitoring service...');
+    const monitoring = require('./services/monitoring');
+
+    const health = monitoring.getHealthStatus();
+    console.log('✅ HEALTH DEBUG: Health check result:', health);
+
+    res.json({
+      status: 'debug_success',
+      health,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.log('❌ HEALTH DEBUG: Error:', err);
+    res.status(500).json({
+      status: 'debug_error',
+      error: err.message,
+      stack: err.stack,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Performance monitoring endpoint
 app.get('/api/v1/monitoring/performance', (req, res) => {
   const metrics = monitoring.getMetrics();
