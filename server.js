@@ -207,6 +207,16 @@ app.get('/api/v1/debug/supabase', async (req, res) => {
   }
 });
 
+// Simple test endpoint (temporary)
+app.get('/api/v1/debug/test', (req, res) => {
+  console.log('🧪 TEST ENDPOINT: Basic routing works');
+  res.json({
+    status: 'success',
+    message: 'Basic routing is working',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Performance monitoring endpoint
 app.get('/api/v1/monitoring/performance', (req, res) => {
   const metrics = monitoring.getMetrics();
