@@ -68,6 +68,31 @@ router.get('/simple', async (req, res) => {
   }
 });
 
+// Test endpoint with NO middleware at all (temporary)
+router.get('/test', async (req, res) => {
+  try {
+    console.log('🧪 TEST ENDPOINT: No middleware, direct query');
+    const { supabase } = require('../config/database');
+
+    const { data, error } = await supabase
+      .from('toyboxes')
+      .select('id,title,created_at')
+      .eq('status', 3)
+      .limit(5);
+
+    if (error) {
+      console.log('❌ Test query error:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    console.log('✅ Test query success:', data?.length || 0, 'results');
+    res.json({ success: true, toyboxes: data });
+  } catch (err) {
+    console.log('💥 Test endpoint exception:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Simplified list toyboxes for debugging (temporary) - no middleware
 router.get('/basic', async (req, res) => {
   try {
