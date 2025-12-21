@@ -1,6 +1,5 @@
 const crypto = require('crypto');
-const { createClient } = require('@supabase/supabase-js');
-const { query, transaction, getClient } = require('../config/database');
+const { supabase } = require('../config/database');
 const { body, param, query: queryParam, validationResult } = require('express-validator');
 const winston = require('winston');
 const achievementService = require('../services/achievementService');
@@ -8,15 +7,6 @@ const achievementService = require('../services/achievementService');
 /**
  * Toybox controller - handles UGC operations
  */
-
-// Initialize Supabase client (only if credentials are available)
-let supabase = null;
-if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY
-  );
-}
 
 /**
  * Generate file hash for duplicate detection
@@ -93,25 +83,21 @@ const uploadToybox = async (req, res) => {
     const fileHash = generateFileHash(contentFile.data);
 
     // Check for duplicate toybox
-    const existingToybox = await query(
-      'SELECT id FROM toyboxes WHERE file_hash = $1',
-      [fileHash]
-    );
+    const { data: existingToybox, error: duplicateError } = await supabase
+      .from('toyboxes')
+      .select('id')
+      .eq('file_hash', fileHash)
+      .single();
 
-    if (existingToybox.rows.length > 0) {
+    if (existingToybox) {
       return res.status(409).json({
         error: {
           code: 'CONFLICT',
           message: 'This toybox has already been uploaded',
-          existing_id: existingToybox.rows[0].id
+          existing_id: existingToybox.id
         }
       });
     }
-
-    const client = await getClient();
-
-    try {
-      await client.query('BEGIN');
 
       // Upload content file to Supabase (skip in test environment)
       let contentUpload = { path: `toybox_${Date.now()}_${crypto.randomBytes(8).toString('hex')}.dat` };
@@ -153,40 +139,43 @@ const uploadToybox = async (req, res) => {
       }
 
       // Insert toybox record
-      const toyboxResult = await client.query(`
-        INSERT INTO toyboxes (
-          creator_id, title, description, version, status, shared,
-          file_path, file_size, file_hash, screenshot, screenshot_metadata,
-          avatars, abilities, genres, playsets, required_playsets_size,
-          total_objects, unique_objects, object_counts, data_size
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
-        RETURNING id, created_at
-      `, [
-        req.user.id,
-        parsedContentInfo.name,
-        parsedContentInfo.desc || '',
-        parsedContentInfo.version || 3,
-        1, // in_review status
-        true,
-        contentUpload.path,
-        contentFile.size,
-        fileHash,
-        screenshotPath,
-        screenshotMetadata,
-        parsedContentInfo.igps || [],
-        parsedContentInfo.abilities || [],
-        parsedContentInfo.genres || [],
-        parsedContentInfo.playsets || [],
-        parsedContentInfo.required_playsets_size || 0,
-        parsedContentInfo.total_objects || 0,
-        parsedContentInfo.unique_objects || 0,
-        parsedContentInfo.object_counts || {},
-        contentFile.size
-      ]);
+      const { data: toybox, error: insertError } = await supabase
+        .from('toyboxes')
+        .insert([{
+          creator_id: req.user.id,
+          title: parsedContentInfo.name,
+          description: parsedContentInfo.desc || '',
+          version: parsedContentInfo.version || 3,
+          status: 1, // in_review status
+          shared: true,
+          file_path: contentUpload.path,
+          file_size: contentFile.size,
+          file_hash: fileHash,
+          screenshot: screenshotPath,
+          screenshot_metadata: screenshotMetadata,
+          avatars: parsedContentInfo.igps || [],
+          abilities: parsedContentInfo.abilities || [],
+          genres: parsedContentInfo.genres || [],
+          playsets: parsedContentInfo.playsets || [],
+          required_playsets_size: parsedContentInfo.required_playsets_size || 0,
+          total_objects: parsedContentInfo.total_objects || 0,
+          unique_objects: parsedContentInfo.unique_objects || 0,
+          object_counts: parsedContentInfo.object_counts || {},
+          data_size: contentFile.size
+        }])
+        .select('id, created_at')
+        .single();
 
-      await client.query('COMMIT');
-
-      const toybox = toyboxResult.rows[0];
+      if (insertError) {
+        // Clean up uploaded files if insert fails
+        if (supabase) {
+          await supabase.storage.from(process.env.SUPABASE_BUCKET || 'toyboxes').remove([contentUpload.path]);
+          if (screenshotPath) {
+            await supabase.storage.from(process.env.SUPABASE_BUCKET || 'toyboxes').remove([screenshotPath]);
+          }
+        }
+        throw insertError;
+      }
 
       // Check for toybox creation achievements
       await achievementService.onToyboxCreated(req.user.id, {
@@ -204,23 +193,27 @@ const uploadToybox = async (req, res) => {
       });
 
     } catch (err) {
-      await client.query('ROLLBACK');
-
       // Clean up uploaded files on error
-      if (contentUpload?.path) {
-        await supabase.storage
-          .from(process.env.SUPABASE_BUCKET || 'toyboxes')
-          .remove([contentUpload.path]);
+      if (contentUpload?.path && supabase) {
+        try {
+          await supabase.storage
+            .from(process.env.SUPABASE_BUCKET || 'toyboxes')
+            .remove([contentUpload.path]);
+        } catch (cleanupErr) {
+          winston.warn('Failed to cleanup content file:', cleanupErr.message);
+        }
       }
-      if (screenshotPath) {
-        await supabase.storage
-          .from(process.env.SUPABASE_BUCKET || 'toyboxes')
-          .remove([screenshotPath]);
+      if (screenshotPath && supabase) {
+        try {
+          await supabase.storage
+            .from(process.env.SUPABASE_BUCKET || 'toyboxes')
+            .remove([screenshotPath]);
+        } catch (cleanupErr) {
+          winston.warn('Failed to cleanup screenshot:', cleanupErr.message);
+        }
       }
 
       throw err;
-    } finally {
-      client.release();
     }
 
   } catch (err) {

@@ -18,92 +18,7 @@ const supabase = createClient(
   }
 );
 
-// Create a compatibility layer that uses Supabase properly
-const pool = {
-  query: async (text, params = []) => {
-    try {
-      winston.debug('Executing query:', text.substring(0, 100) + '...');
-
-      // Convert SQL queries to Supabase operations
-      if (text.includes('SELECT NOW()')) {
-        // For simple time queries, return current time
-        return {
-          rows: [{ now: new Date().toISOString() }],
-          rowCount: 1
-        };
-      }
-
-      if (text.includes('INSERT INTO users')) {
-        // Handle user registration
-        const [, username, email, password_hash, is_admin, profile_data] = text.match(/VALUES\s*\(\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*([^,]+),\s*'([^']*)'\s*\)/);
-        const { data, error } = await supabase
-          .from('users')
-          .insert([{
-            username,
-            email,
-            password_hash,
-            is_admin: is_admin === 'true',
-            profile_data: profile_data ? JSON.parse(profile_data) : {}
-          }])
-          .select()
-          .single();
-
-        if (error) throw error;
-        return { rows: [data], rowCount: 1 };
-      }
-
-      if (text.includes('SELECT * FROM users WHERE username =')) {
-        // Handle user lookup
-        const [, username] = text.match(/WHERE username = '([^']+)'/);
-        const { data, error } = await supabase
-          .from('users')
-          .select('*')
-          .eq('username', username)
-          .single();
-
-        if (error && error.code !== 'PGRST116') throw error; // PGRST116 is "not found"
-        return { rows: data ? [data] : [], rowCount: data ? 1 : 0 };
-      }
-
-      if (text.includes('SELECT * FROM toyboxes')) {
-        // Handle toybox queries
-        let query = supabase.from('toyboxes').select('*');
-
-        if (text.includes('ORDER BY created_at DESC')) {
-          query = query.order('created_at', { ascending: false });
-        }
-        if (text.includes('LIMIT')) {
-          const [, limit] = text.match(/LIMIT (\d+)/);
-          query = query.limit(parseInt(limit));
-        }
-
-        const { data, error } = await query;
-        if (error) throw error;
-        return { rows: data || [], rowCount: data?.length || 0 };
-      }
-
-      // For unimplemented queries, log and return empty results
-      winston.warn('Query not fully implemented, returning empty results:', text.substring(0, 100));
-      return { rows: [], rowCount: 0 };
-
-    } catch (error) {
-      winston.error('Database query error:', error);
-      throw error;
-    }
-  },
-
-  connect: async () => {
-    // Supabase handles connections automatically
-    return {
-      release: () => {},
-      query: pool.query
-    };
-  },
-
-  end: async () => {
-    // Supabase handles cleanup automatically
-  }
-};
+// Export Supabase client directly for controllers to use
 
 // Supabase client handles connection management automatically
 // No need for pool event listeners
@@ -184,10 +99,10 @@ async function close() {
 }
 
 module.exports = {
+  supabase,
   query,
   transaction,
   getClient,
   testConnection,
-  close,
-  pool
+  close
 };

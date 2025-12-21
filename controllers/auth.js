@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { query, transaction } = require('../config/database');
+const { supabase } = require('../config/database');
 const { body, validationResult } = require('express-validator');
 const winston = require('winston');
 
@@ -68,12 +68,22 @@ const register = async (req, res) => {
     const { username, email, password } = req.body;
 
     // Check if user already exists
-    const existingUser = await query(
-      'SELECT id FROM users WHERE username = $1 OR email = $2',
-      [username, email]
-    );
+    const { data: existingUsers, error: checkError } = await supabase
+      .from('users')
+      .select('id')
+      .or(`username.eq.${username},email.eq.${email}`);
 
-    if (existingUser.rows.length > 0) {
+    if (checkError) {
+      winston.error('Error checking existing user:', checkError);
+      return res.status(500).json({
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'Failed to check existing user'
+        }
+      });
+    }
+
+    if (existingUsers && existingUsers.length > 0) {
       return res.status(409).json({
         error: {
           code: 'CONFLICT',
@@ -87,14 +97,26 @@ const register = async (req, res) => {
     const passwordHash = await bcrypt.hash(password, saltRounds);
 
     // Create user
-    const result = await query(
-      `INSERT INTO users (username, email, password_hash, profile_data)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, username, email, created_at`,
-      [username, email, passwordHash, { display_name: username }]
-    );
+    const { data: user, error: insertError } = await supabase
+      .from('users')
+      .insert([{
+        username,
+        email,
+        password_hash: passwordHash,
+        profile_data: { display_name: username }
+      }])
+      .select('id, username, email, created_at')
+      .single();
 
-    const user = result.rows[0];
+    if (insertError) {
+      winston.error('Error creating user:', insertError);
+      return res.status(500).json({
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'Failed to create user'
+        }
+      });
+    }
 
     // Generate tokens
     const accessToken = generateAccessToken(user.id);
@@ -151,12 +173,13 @@ const login = async (req, res) => {
     const { username, password } = req.body;
 
     // Find user
-    const result = await query(
-      'SELECT id, username, email, password_hash, is_active FROM users WHERE username = $1 OR email = $1',
-      [username]
-    );
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, username, email, password_hash, is_active')
+      .or(`username.eq.${username},email.eq.${username}`)
+      .single();
 
-    if (result.rows.length === 0) {
+    if (userError || !user) {
       return res.status(401).json({
         error: {
           code: 'UNAUTHORIZED',
@@ -164,8 +187,6 @@ const login = async (req, res) => {
         }
       });
     }
-
-    const user = result.rows[0];
 
     if (!user.is_active) {
       return res.status(401).json({
