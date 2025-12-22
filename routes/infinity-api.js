@@ -7,7 +7,7 @@
  * These routes redirect to the actual implementation in disney-ugc routes.
  */
 
-const express = require('router');
+const express = require('express');
 const router = express.Router();
 
 // Import the disney-ugc controller
