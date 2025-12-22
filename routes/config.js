@@ -51,6 +51,9 @@ router.get('/coregames/config/v1/infinity3/steam/', (req, res) => {
     // NAT negotiation domain
     "domain_cg_natneg": "dibeyond.com",
     
+    // Disney ID creation endpoint - CRITICAL for authentication
+    "url_cg_did_create": `${baseUrl}`,
+    
     // Friends list endpoint
     "url_cg_friends": `${baseUrl}/coregames/friends/v1/steam`,
     

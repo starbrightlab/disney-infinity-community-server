@@ -24,6 +24,33 @@ const upload = multer({
 });
 
 /**
+ * Disney ID (DID) Creation / Authentication Routes
+ * The game calls this endpoint first to authenticate
+ */
+
+// DID authentication - accept any request and return success
+router.post('/', (req, res) => {
+  console.log(`🔐 DID AUTH REQUEST: ${JSON.stringify(req.body)}`);
+  // Return a fake DID token
+  res.json({
+    status: 0,
+    timestamp: Math.floor(Date.now() / 1000),
+    did: 'community-' + Math.random().toString(36).substr(2, 9),
+    token: 'fake-auth-token-' + Math.random().toString(36).substr(2, 16),
+    authenticated: true
+  });
+});
+
+router.get('/', (req, res) => {
+  console.log(`🔐 DID AUTH GET`);
+  res.json({
+    status: 0,
+    timestamp: Math.floor(Date.now() / 1000),
+    authenticated: true
+  });
+});
+
+/**
  * UGC Routes - Map game client paths to disney-ugc controller
  */
 
