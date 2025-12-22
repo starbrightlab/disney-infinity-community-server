@@ -464,6 +464,7 @@ app.get('/api/v1/info', (req, res) => {
 
 // Import routes
 const configRoutes = require('./routes/config'); // CRITICAL: Disney Infinity config endpoint
+const infinityApiRoutes = require('./routes/infinity-api'); // Disney Infinity API format routes
 const authRoutes = require('./routes/auth');
 const disneyUgcRoutes = require('./routes/disney-ugc'); // PRIMARY: Disney UGC API routes
 const toyboxRoutes = require('./routes/toybox'); // DEPRECATED: Legacy routes for backward compatibility
@@ -578,6 +579,10 @@ testConnection().then(connected => {
 // CRITICAL: Disney Infinity config endpoint - MUST be at root level, not under /api/v1/
 app.use('/', configRoutes);
 console.log('✅ Disney Infinity config endpoint mounted at /coregames/config/');
+
+// CRITICAL: Disney Infinity API format routes (/infinity/{service}/v{version}/{platform}/)
+app.use('/', infinityApiRoutes);
+console.log('✅ Disney Infinity API routes mounted at /infinity/');
 
 // PRIMARY: Disney UGC API routes (matches original Disney URL structure)
 // Supports: /{version}/{product}/{visibility}/toybox
