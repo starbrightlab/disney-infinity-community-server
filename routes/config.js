@@ -20,8 +20,9 @@ const router = express.Router();
 router.get('/coregames/config/v1/infinity3/steam/', (req, res) => {
   console.log('📡 CONFIG REQUEST: Game client requesting service configuration');
   
-  // Build the base URL from environment or use api.dibeyond.com
-  const baseUrl = process.env.API_BASE_URL || 'https://api.dibeyond.com';
+  // Build the base URL from environment or use dibeyond.com (NO api. prefix!)
+  // The game client queries dibeyond.com directly (not api.dibeyond.com)
+  const baseUrl = process.env.API_BASE_URL || 'https://dibeyond.com';
   
   // This JSON response tells the game where ALL services are located
   const config = {
