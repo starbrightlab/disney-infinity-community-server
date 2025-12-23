@@ -74,15 +74,14 @@ router.get('/coregames/config/v1/infinity3/steam/', (req, res) => {
 
 /**
  * Alternative endpoint for other platforms (if needed in future)
- * Currently Gold Edition only uses /steam/ path
+ * Gold Edition uses /pc/ path despite being the Steam version
  */
 router.get('/coregames/config/v1/infinity3/:platform/', (req, res) => {
   const { platform } = req.params;
   console.log(`📡 CONFIG REQUEST: Received for platform: ${platform}`);
   
-  // For now, just redirect to steam config
-  // In future, could have platform-specific configs
-  const baseUrl = process.env.API_BASE_URL || 'https://api.dibeyond.com';
+  // Use dibeyond.com (NOT api.dibeyond.com) to match URL patches
+  const baseUrl = process.env.API_BASE_URL || 'https://dibeyond.com';
   
   const config = {
     "url_inf_save": `${baseUrl}/infinity/save/v1/${platform}/`,
@@ -93,10 +92,16 @@ router.get('/coregames/config/v1/infinity3/:platform/', (req, res) => {
     "url_inf_entitlement": `${baseUrl}/infinity/entitlement/v1/${platform}`,
     "url_web_disney_shop": `${baseUrl}/pc-shop`,
     "domain_cg_natneg": "dibeyond.com",
+    "url_cg_did_create": `${baseUrl}`,
     "url_cg_friends": `${baseUrl}/coregames/friends/v1/${platform}`,
     "url_cg_matchmaking": `${baseUrl}/coregames/matchmaking/v1`,
     "url_social_report_player": `${baseUrl}/gxtools/report/v2/queue`
   };
+  
+  console.log('✅ CONFIG RESPONSE: Sending service configuration to game client');
+  console.log('   Platform:', platform);
+  console.log('   Base URL:', baseUrl);
+  console.log('   Endpoints configured:', Object.keys(config).length);
   
   res.json(config);
 });

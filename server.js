@@ -481,6 +481,11 @@ const achievementsRoutes = require('./routes/achievements');
 const syncRoutes = require('./routes/sync');
 const analyticsRoutes = require('./routes/analytics');
 
+// Compatibility routes for legacy Disney Infinity API paths
+const didCompatRoutes = require('./routes/did-compat');
+const sessionsCompatRoutes = require('./routes/sessions-compat');
+const wiiStubsRoutes = require('./routes/wii-stubs');
+
 // Import middleware
 const { rateLimiters } = require('./middleware/rateLimit');
 const monitoring = require('./services/monitoring');
@@ -588,6 +593,18 @@ console.log('✅ Disney Infinity API routes mounted at /infinity/');
 // Supports: /{version}/{product}/{visibility}/toybox
 app.use('/', rateLimiters.general, disneyUgcRoutes);
 console.log('✅ Disney UGC API routes mounted at / (PRIMARY)');
+
+// CRITICAL: Disney ID (DID) v3 API compatibility routes for Wii U and other platforms
+app.use('/coregames/did/v3', rateLimiters.auth, didCompatRoutes);
+console.log('✅ Disney ID v3 API routes mounted at /coregames/did/v3/');
+
+// CRITICAL: CoreGames Sessions v1 API compatibility routes for multiplayer
+app.use('/coregames/sessions/v1', rateLimiters.general, sessionsCompatRoutes);
+console.log('✅ Sessions v1 API routes mounted at /coregames/sessions/v1/');
+
+// LOW PRIORITY: Stub endpoints for Wii U endpoints (non-critical)
+app.use('/', rateLimiters.general, wiiStubsRoutes);
+console.log('✅ Wii U stub endpoints mounted (ticker, prestige, moderation, etc.)');
 
 // Modern API routes (for non-UGC endpoints)
 app.use('/api/v1/auth', rateLimiters.auth, authRoutes);
